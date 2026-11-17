@@ -1,0 +1,16 @@
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs and local test output
+*.log
+coverage/
+playwright-report/
+test-results/
+
+# Temporary screenshots and local servers
+*.png
+*.jpg
+*.jpeg

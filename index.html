@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="PIXEL//BREACH 断层突围 —— 原生 HTML/CSS/JS + WebGL 的像素风 3D 第一人称射击 Demo。">
+  <title>PIXEL//BREACH — 断层突围</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <main class="shell">
+    <header class="topline">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <span class="brand-code">BREACH PROTOCOL</span>
+        <span class="brand-sep" aria-hidden="true">/</span>
+        <span class="brand-sector">SECTOR 07 · 断层设施</span>
+      </div>
+      <div class="topline-right">
+        <span class="link-state"><i aria-hidden="true"></i>LINK STABLE</span>
+        <span class="build">BUILD 0.1.7</span>
+      </div>
+    </header>
+
+    <section class="stage" id="stage">
+      <canvas id="scene" width="480" height="270" tabindex="0" role="application"
+        aria-label="PIXEL//BREACH 游戏画面。WASD 移动，鼠标转向，左键攻击，1/2/3 切换武器，R 换弹，Shift 冲刺，Q 相位突进，F 过载脉冲，E 出口交互，Esc 暂停，Enter 确认。">你的浏览器需要支持 WebGL 才能运行本游戏。</canvas>
+
+      <div class="fx scanlines" aria-hidden="true"></div>
+      <div class="fx vignette" aria-hidden="true"></div>
+      <div class="damage" id="damageFlash" aria-hidden="true"></div>
+      <div class="flash" id="screenFlash" aria-hidden="true"></div>
+
+      <div class="hud" id="hud">
+        <div class="hud-block hud-objective">
+          <p class="hud-kicker" id="sectorTag">SECTOR 07 // 断层</p>
+          <p class="hud-objective-text" id="objective">目标 // 接入断层设施</p>
+        </div>
+
+        <div class="hud-block hud-wave">
+          <p class="wave-label" id="waveLabel">STANDBY</p>
+          <p class="wave-sub" id="enemyCount">敌人 00</p>
+        </div>
+
+        <div class="boss" id="bossBar" hidden>
+          <div class="boss-head">
+            <span class="boss-id">零号守门者 <em>GATEKEEPER ZERO</em></span>
+            <span class="boss-phase" id="bossPhase">PHASE 1</span>
+          </div>
+          <div class="boss-track">
+            <div class="boss-fill" id="bossFill"></div>
+            <span class="boss-pip pip-a" aria-hidden="true"></span>
+            <span class="boss-pip pip-b" aria-hidden="true"></span>
+          </div>
+          <div class="boss-foot">
+            <span id="bossHpText">160 / 160</span>
+            <span class="boss-state" id="bossState">CORE ONLINE</span>
+          </div>
+        </div>
+
+        <div class="hud-block hud-vitals">
+          <div class="vital-head">
+            <span class="vital-label">生命 / HP</span>
+            <span class="vital-value" id="hpText">100</span>
+          </div>
+          <div class="hp-track"><div class="hp-fill" id="hpFill"></div></div>
+          <div class="abilities">
+            <div class="ability" id="dashAbility">
+              <span class="ability-key">Q</span>
+              <span class="ability-body">
+                <span class="ability-name">相位突进</span>
+                <span class="cd-track"><i id="dashFill"></i></span>
+              </span>
+              <span class="ability-cd" id="dashCd">就绪</span>
+            </div>
+            <div class="ability" id="pulseAbility">
+              <span class="ability-key">F</span>
+              <span class="ability-body">
+                <span class="ability-name">过载脉冲</span>
+                <span class="cd-track"><i id="pulseFill"></i></span>
+              </span>
+              <span class="ability-cd" id="pulseCd">就绪</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hud-block hud-weapon">
+          <div class="weapon-head">
+            <span class="weapon-slot" id="weaponSlot">01</span>
+            <span class="weapon-name" id="weaponName">脉冲步枪</span>
+          </div>
+          <div class="ammo-line">
+            <span class="ammo-mag" id="ammoMag">30</span>
+            <span class="ammo-slash">/</span>
+            <span class="ammo-reserve" id="ammoReserve">120</span>
+          </div>
+          <div class="weapon-foot">
+            <span class="weapon-en" id="weaponEn">PULSE RIFLE</span>
+            <span class="reload-tag" id="reloadTag" hidden>装填中</span>
+          </div>
+          <div class="slots" id="weaponSlots">
+            <span class="slot active" data-slot="0">1</span>
+            <span class="slot" data-slot="1">2</span>
+            <span class="slot" data-slot="2">3</span>
+          </div>
+        </div>
+
+        <div class="crosshair" id="crosshair" aria-hidden="true">
+          <i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i>
+          <span class="ch-dot"></span>
+        </div>
+        <div class="hitmarker" id="hitmarker" aria-hidden="true">
+          <i></i><i></i><i></i><i></i>
+        </div>
+
+        <div class="hint" id="hint" hidden><kbd>E</kbd> 接入出口</div>
+        <div class="banner" id="banner" hidden></div>
+      </div>
+
+      <div class="toasts" id="toasts" aria-live="polite"></div>
+
+      <div class="overlay" id="overlay">
+        <div class="panel" id="panel">
+          <p class="panel-kicker" id="ovKicker">BREACH PROTOCOL // 断层级指令</p>
+          <h1 class="panel-title" id="ovTitle">PIXEL<span>//</span>BREACH</h1>
+          <p class="panel-sub" id="ovSub">断 层 突 围</p>
+          <p class="panel-desc" id="ovDesc">断层设施已失守。穿过两波封锁，拆掉零号守门者的核心，然后从出口撤离。</p>
+
+          <div class="panel-stats" id="ovStats" hidden></div>
+
+          <div class="panel-controls" id="ovControls">
+            <div class="ctrl"><kbd>W A S D</kbd><span>移动</span></div>
+            <div class="ctrl"><kbd>鼠标</kbd><span>转向 / 瞄准</span></div>
+            <div class="ctrl"><kbd>左键</kbd><span>攻击</span></div>
+            <div class="ctrl"><kbd>1 2 3</kbd><span>切换武器</span></div>
+            <div class="ctrl"><kbd>R</kbd><span>换弹</span></div>
+            <div class="ctrl"><kbd>SHIFT</kbd><span>冲刺</span></div>
+            <div class="ctrl"><kbd>Q</kbd><span>相位突进</span></div>
+            <div class="ctrl"><kbd>F</kbd><span>过载脉冲</span></div>
+            <div class="ctrl"><kbd>E</kbd><span>出口交互</span></div>
+            <div class="ctrl"><kbd>ESC</kbd><span>暂停 / 释放鼠标</span></div>
+          </div>
+
+          <button class="panel-btn" id="ovBtn" type="button">开始突入 <kbd>ENTER</kbd></button>
+          <p class="panel-foot" id="ovFoot">点击开始 · 浏览器会锁定鼠标指针</p>
+        </div>
+      </div>
+
+      <div class="fatal" id="fatal" hidden>
+        <div class="fatal-panel">
+          <p class="panel-kicker">SYSTEM FAULT</p>
+          <h2>无法启动 3D 渲染</h2>
+          <p id="fatalText">本浏览器未启用 WebGL。请更换浏览器或开启硬件加速后重试。</p>
+          <p class="fatal-path">离线依赖：vendor/three.min.js</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footline">
+      <span>WASD 移动 · 左键攻击 · 1/2/3 武器 · R 换弹 · Q/F 技能 · E 出口 · ESC 暂停</span>
+      <span class="footline-right">NO NETWORK // PURE WEBGL</span>
+    </footer>
+  </main>
+
+  <noscript>
+    <p style="color:#ff6b8b;text-align:center;font-family:monospace">需要启用 JavaScript 才能进入断层。</p>
+  </noscript>
+
+  <script src="game.js" defer></script>
+</body>
+</html>
