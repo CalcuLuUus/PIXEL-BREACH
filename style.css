@@ -378,8 +378,25 @@ body {
   background: rgba(2, 4, 10, 0.9);
 }
 
-.boss-pip.pip-a { left: 66.6%; }
-.boss-pip.pip-b { left: 33.3%; }
+.boss-pip.pip-a { left: 66%; }
+.boss-pip.pip-b { left: 30%; }
+
+.boss.is-enraged {
+  border-color: rgba(255, 45, 45, 0.75);
+  box-shadow: 0 0 30px rgba(255, 45, 45, 0.28);
+  animation: enragePulse 0.8s steps(2, end) infinite;
+}
+
+.boss.is-enraged .boss-fill {
+  background: linear-gradient(90deg, #6d0000, #ff2d2d 55%, #ffd0a8);
+  box-shadow: 0 0 18px rgba(255, 45, 45, 0.9);
+}
+
+.boss.is-enraged .boss-state,
+.boss.is-enraged .boss-phase {
+  color: #ff7a5c;
+  text-shadow: 0 0 8px rgba(255, 45, 45, 0.85);
+}
 
 .boss-foot {
   display: flex;
@@ -393,6 +410,7 @@ body {
 .boss-state { color: var(--magenta); }
 .boss.is-shielded .boss-state { color: var(--cyan); }
 .boss.is-exposed .boss-state { color: var(--amber); }
+.boss.is-enraged .boss-state { color: #ff7a5c; }
 
 /* ----------------------------------------------------------------- vitals */
 
@@ -514,6 +532,18 @@ body {
 
 .ability.is-ready .ability-cd { color: var(--green); }
 
+.move-state {
+  margin: 0.5em 0 0;
+  padding-top: 0.4em;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.58em;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+.move-state.is-air { color: var(--amber); }
+.move-state.is-spent { color: var(--red); }
+
 /* ----------------------------------------------------------------- weapon */
 
 .hud-weapon {
@@ -584,6 +614,78 @@ body {
   letter-spacing: 0.14em;
   animation: blink 0.7s steps(2, end) infinite;
 }
+
+/* ------------------------------------------------------------- supply point */
+
+.hud-supply {
+  position: absolute;
+  top: 17.5%;
+  left: 2.4%;
+  width: 15.5em;
+  max-width: 40%;
+  padding: 0.55em 0.75em;
+  background: linear-gradient(180deg, rgba(18, 10, 6, 0.9), rgba(8, 6, 4, 0.55));
+  border-left: 2px solid var(--amber);
+  box-shadow: 0 0 18px rgba(255, 168, 66, 0.1);
+}
+
+.hud-supply.is-cooling { border-left-color: var(--dim); opacity: 0.82; }
+.hud-supply.is-full { border-left-color: var(--green); }
+.hud-supply.is-active { border-left-color: var(--cyan); }
+
+.supply-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.supply-key {
+  display: grid;
+  place-items: center;
+  width: 1.5em;
+  height: 1.5em;
+  flex: none;
+  color: #1c1204;
+  background: var(--amber);
+  font-size: 0.78em;
+  font-weight: 700;
+}
+
+.supply-name {
+  font-size: 0.78em;
+  color: var(--ink);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.supply-track {
+  height: 3px;
+  margin-top: 0.45em;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.supply-track i {
+  display: block;
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--amber), var(--green));
+  transition: width 0.08s linear;
+}
+
+.supply-state {
+  margin: 0.35em 0 0;
+  font-size: 0.62em;
+  line-height: 1.35;
+  letter-spacing: 0.1em;
+  color: var(--amber);
+}
+
+.hud-supply.is-cooling .supply-state { color: var(--dim); }
+.hud-supply.is-full .supply-state { color: var(--green); }
+.hud-supply.is-active .supply-state { color: var(--cyan); }
 
 .slots {
   display: flex;
@@ -1015,6 +1117,11 @@ kbd {
   50% { opacity: 0.55; }
 }
 
+@keyframes enragePulse {
+  0%, 100% { filter: none; }
+  50% { filter: brightness(1.22); }
+}
+
 @keyframes hitmark {
   0% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) scale(0.7); }
   100% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) scale(1.25); }
@@ -1047,6 +1154,7 @@ kbd {
   .panel-stats { grid-template-columns: 1fr; }
   .hud { font-size: 8px; }
   .boss { width: 62%; top: 16%; }
+  .hud-supply { top: 37%; max-width: 54%; }
   .hud-vitals { width: 19em; }
   .hud-weapon { width: 15em; }
   .hud-objective { max-width: 52%; }

@@ -75,8 +75,13 @@
 
     var ui = {
       objective: byId('objective'),
+      sectorTag: byId('sectorTag'),
       waveLabel: byId('waveLabel'),
       enemyCount: byId('enemyCount'),
+      supplyPanel: byId('supplyPanel'),
+      supplyName: byId('supplyName'),
+      supplyFill: byId('supplyFill'),
+      supplyState: byId('supplyState'),
       bossBar: bossBar,
       bossFill: byId('bossFill'),
       bossPhase: byId('bossPhase'),
@@ -90,6 +95,7 @@
       pulseAbility: byId('pulseAbility'),
       pulseFill: byId('pulseFill'),
       pulseCd: byId('pulseCd'),
+      moveState: byId('moveState'),
       weaponSlot: byId('weaponSlot'),
       weaponName: byId('weaponName'),
       weaponEn: byId('weaponEn'),
@@ -128,20 +134,20 @@
     renderer.setSize(RES_W, RES_H);
 
     var scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x03060c);
-    scene.fog = new THREE.Fog(0x03060c, 15, 47);
+    scene.background = new THREE.Color(0x1b1228);
+    scene.fog = new THREE.Fog(0x6b3c4e, 21, 82);
 
-    var camera = new THREE.PerspectiveCamera(74, RES_W / RES_H, 0.06, 120);
+    var camera = new THREE.PerspectiveCamera(74, RES_W / RES_H, 0.06, 160);
     scene.add(camera);
 
-    var ambientLight = new THREE.AmbientLight(0x4d6d94, 1.05);
+    var ambientLight = new THREE.AmbientLight(0x414f8c, 1.02);
     scene.add(ambientLight);
     var ambientTint = {
-      target: new THREE.Color(0x4d6d94),
-      baseHex: 0x4d6d94
+      target: new THREE.Color(0x414f8c),
+      baseHex: 0x414f8c
     };
-    var sun = new THREE.DirectionalLight(0xe2f1ff, 1.12);
-    sun.position.set(-0.45, 1, 0.3);
+    var sun = new THREE.DirectionalLight(0xffae62, 1.38);
+    sun.position.set(-0.66, 0.4, 0.55);
     scene.add(sun);
 
     /* ------------------------------------------------------------- palette */
@@ -154,10 +160,14 @@
       amber: 0xffc861,
       red: 0xff4d6d,
       green: 0x6bffb0,
-      floor: 0x0a111d,
-      wall: 0x0f1a2c,
-      wallDark: 0x0a1220,
-      steel: 0x27354b,
+      sunset: 0xff9a4a,
+      horizon: 0xff6a52,
+      dusk: 0x6d4a92,
+      water: 0x1a2b46,
+      floor: 0x2b2a2b,
+      wall: 0x31343a,
+      wallDark: 0x22252b,
+      steel: 0x4b5560,
       gun: 0x8ea6bd
     };
 
@@ -200,6 +210,7 @@
       cone: new THREE.ConeGeometry(1, 1, 6),
       torus: new THREE.TorusGeometry(1, 0.055, 5, 22),
       ring: new THREE.TorusGeometry(1, 0.03, 4, 26),
+      slashArc: new THREE.TorusGeometry(1, 0.06, 4, 18, Math.PI * 1.18),
       circle: new THREE.CircleGeometry(1, 24)
     };
 
@@ -264,6 +275,24 @@
       fxLine: matBasic(0x58ddff),
       fxPylon: matBasic(0x3ec8dd),
       fxAlarm: matBasic(0xff584f),
+
+      // Outdoor dockyard palette.  Container paint is deliberately muted so
+      // the low sun and blue dusk fill still carry the colour, while the
+      // silhouettes stay readable at 640x360.
+      asphalt: matLambert(0x34343a, { specular: 0.22, roughness: 0.72 }),
+      asphaltWarm: matLambert(0x403a3b, { specular: 0.26, roughness: 0.66 }),
+      quay: matLambert(0x5d5953, { specular: 0.1, roughness: 0.88 }),
+      containerRed: matLambert(0x9c4038, { specular: 0.28, roughness: 0.56 }),
+      containerBlue: matLambert(0x2f5a75, { specular: 0.3, roughness: 0.54 }),
+      containerGreen: matLambert(0x39604b, { specular: 0.26, roughness: 0.58 }),
+      containerOrange: matLambert(0xa55f2e, { specular: 0.3, roughness: 0.52 }),
+      containerPurple: matLambert(0x5b4670, { specular: 0.26, roughness: 0.58 }),
+      containerTeal: matLambert(0x306260, { specular: 0.3, roughness: 0.54 }),
+      water: matLambert(0x1a2b46, { specular: 0.82, roughness: 0.18, specularColor: 0xffc890 }),
+      waterGlint: matBasic(0xffb066, {
+        transparent: true, opacity: 0.14, blending: 'additive', depthWrite: false, fog: false
+      }),
+      fenceDark: matLambert(0x2b2f33, { specular: 0.34, roughness: 0.5 }),
 
       // Conservative pseudo-lighting: unlit layered decals.  AO is a normal
       // black blend; light pools/halos use additive blending.  Every entry is
@@ -946,7 +975,7 @@
     }
 
     function addFloorGlow(x, z, radius, hex, opacity) {
-      if (floorGlows.length >= 14) return null;
+      if (floorGlows.length >= 20) return null;
       var mat = matBasic(hex, {
         transparent: true,
         opacity: opacity * 1.25,
@@ -1012,8 +1041,254 @@
       addReflectionFloor(refl, x + 0.56, z + towardCenter * 1.1, 0, 2.35, 0.12);
     }
 
-    function addIBeam(x, z, h, width, yaw) {
+    /* ---------------------------------------------------- dockyard kit ---- */
+
+    var CONTAINER_KEYS = [
+      'containerRed', 'containerBlue', 'containerGreen',
+      'containerOrange', 'containerPurple', 'containerTeal'
+    ];
+
+    function containerKeyFor(i) {
+      return CONTAINER_KEYS[Math.abs(i) % CONTAINER_KEYS.length];
+    }
+
+    // One container body, readable corner castings and corrugation.  Only the
+    // low props passed with standable:true enter the traversal whitelist.
+    function addContainer(x, z, w, h, d, yaw, key, baseY, opts) {
+      opts = opts || {};
+      baseY = baseY || 0;
+      var body = getBatch(key || containerKeyFor(Math.floor(x + z)));
+      var edge = getBatch('steelDark');
+      var trim = getBatch('steel2');
+      var rust = getBatch('rust');
+      if (!body) return;
+      if (baseY < 0.05) addContactAO(x, z, w * 1.22, d * 1.22, yaw);
+      body.box(x, baseY + h / 2, z, w, h, d, yaw);
+      var c = Math.cos(yaw || 0), s = Math.sin(yaw || 0);
+      var lx, lz, p;
+      if (edge) {
+        edge.box(x, baseY + h * 0.5, z, w + 0.055, 0.12, d + 0.055, yaw);
+        edge.box(x, baseY + 0.075, z, w + 0.06, 0.15, d + 0.06, yaw);
+        edge.box(x, baseY + h - 0.075, z, w + 0.06, 0.15, d + 0.06, yaw);
+        for (var sx = -1; sx <= 1; sx += 2) {
+          for (var sz = -1; sz <= 1; sz += 2) {
+            p = localXZ(x, z, sx * (w / 2 - 0.07), sz * (d / 2 - 0.07), yaw);
+            edge.box(p[0], baseY + h / 2, p[1], 0.13, h, 0.13, yaw);
+          }
+        }
+        // Vertical corrugation ribs on the long faces.
+        for (var r = -3; r <= 3; r++) {
+          if (r === 0) continue;
+          lx = r * w / 8.2;
+          p = localXZ(x, z, lx, d / 2 + 0.018, yaw);
+          edge.box(p[0], baseY + h / 2, p[1], 0.055, h * 0.82, 0.03, yaw);
+          p = localXZ(x, z, lx, -d / 2 - 0.018, yaw);
+          edge.box(p[0], baseY + h / 2, p[1], 0.055, h * 0.82, 0.03, yaw);
+        }
+        // Door seam and lock bars on the near end.
+        p = localXZ(x, z, 0, d / 2 + 0.024, yaw);
+        edge.box(p[0], baseY + h / 2, p[1], 0.045, h * 0.86, 0.035, yaw);
+        for (var b = -1; b <= 1; b += 2) {
+          p = localXZ(x, z, b * w * 0.22, d / 2 + 0.03, yaw);
+          trim.box(p[0], baseY + h * 0.52, p[1], 0.06, h * 0.58, 0.035, yaw);
+        }
+      }
+      if (trim) {
+        p = localXZ(x, z, 0, d / 2 + 0.035, yaw);
+        drawPixelText('white', p[0], baseY + h * 0.62, p[1] + 0.01, yaw,
+          opts.code || ('DKY-' + (Math.abs(Math.floor(x * 3 + z * 7)) % 89 + 10)),
+          Math.min(0.085, h * 0.05), 0.04);
+      }
+      if (rust && h > 1.2) {
+        p = localXZ(x, z, -w * 0.23, d / 2 + 0.04, yaw);
+        rust.box(p[0], baseY + h * 0.3, p[1], w * 0.18, h * 0.24, 0.03, yaw);
+        p = localXZ(x, z, w * 0.31, -d / 2 - 0.04, yaw);
+        rust.box(p[0], baseY + h * 0.45, p[1], w * 0.12, h * 0.3, 0.03, yaw);
+      }
+      addCollider(x, z,
+        Math.abs(w * c) + Math.abs(d * s),
+        Math.abs(w * s) + Math.abs(d * c), baseY, baseY + h);
+      if (opts.standable) {
+        addStandable(x, z,
+          Math.abs(w * c) + Math.abs(d * s),
+          Math.abs(w * s) + Math.abs(d * c), baseY + h, opts.code || 'CONTAINER');
+      }
+      if (opts.topTrim !== false) {
+        var rail = getBatch('hazard');
+        if (rail && h < 1.6) {
+          p = localXZ(x, z, 0, d / 2 + 0.045, yaw);
+          rail.box(p[0], baseY + h * 0.5, p[1], w * 0.34, 0.09, 0.025, yaw);
+        }
+      }
+    }
+
+    function addPallet(x, z, yaw, baseY) {
+      baseY = baseY || 0;
+      var wood = getBatch('rustLight');
+      var dark = getBatch('rustDark');
+      var band = getBatch('steel2');
+      if (!wood || !dark) return;
+      var c = Math.cos(yaw || 0), s = Math.sin(yaw || 0);
+      for (var i = -1; i <= 1; i++) {
+        wood.box(x + i * 0.32 * s, baseY + 0.055, z + i * 0.32 * c, 1.15, 0.09, 0.22, yaw);
+        dark.box(x + i * 0.32 * s, baseY + 0.145, z + i * 0.32 * c, 1.06, 0.07, 0.18, yaw);
+      }
+      wood.box(x, baseY + 0.11, z, 0.2, 0.2, 0.96, yaw);
+      if (band) {
+        band.box(x, baseY + 0.2, z, 0.09, 0.05, 0.92, yaw);
+      }
+      addContactAO(x, z, 1.55, 1.4, yaw);
+      addCollider(x, z, 1.2, 1.05, baseY, baseY + 0.2);
+      addStandable(x, z, 1.2, 1.05, baseY + 0.2, 'PALLET');
+    }
+
+    function addDockLamp(x, z, height, glowHex, lampHex) {
+      var pole = getBatch('steelDark');
+      var head = getBatch(lampHex || 'lampWarm');
+      var cage = getBatch('steel2');
+      var h = height || 5.2;
+      if (!pole) return;
+      pole.pipe(x, 0.05, z, x, h, z, 0.075, 6);
+      pole.box(x, 0.1, z, 0.34, 0.2, 0.34, 0);
+      if (cage) {
+        cage.box(x, h, z, 0.24, 0.14, 0.58, 0);
+        cage.box(x, h - 0.2, z, 0.7, 0.08, 0.26, 0);
+      }
+      if (head) head.box(x, h - 0.16, z, 0.52, 0.07, 0.34, 0);
+      var halo = getBatch(glowHex === 0xffb153 ? 'glowWarm' : 'glowCool');
+      var haloCore = getBatch(glowHex === 0xffb153 ? 'glowWarmCore' : 'glowCoolCore');
+      if (halo) halo.box(x, h - 0.18, z, 1.4, 0.34, 0.9, 0);
+      if (haloCore) haloCore.box(x, h - 0.17, z, 0.7, 0.16, 0.42, 0);
+      addZoneLightPool(x, z, 3.4, glowHex === 0xffb153 ? 'Warm' : 'Cool');
+      addFloorGlow(x, z, 2.6, glowHex, 0.045);
+    }
+
+    function addFenceLine(x0, z0, x1, z1, height) {
+      var dx = x1 - x0, dz = z1 - z0;
+      var len = Math.sqrt(dx * dx + dz * dz);
+      if (len < 0.5) return;
+      var posts = Math.max(2, Math.ceil(len / 4.2) + 1);
+      var post = getBatch('fenceDark');
+      var wire = getBatch('steelDeep');
+      var h = height || 2.35;
+      for (var i = 0; i < posts; i++) {
+        var t = i / (posts - 1);
+        var x = x0 + dx * t, z = z0 + dz * t;
+        if (post) {
+          post.box(x, h / 2, z, 0.09, h, 0.09, 0);
+          post.box(x, 0.07, z, 0.26, 0.14, 0.26, 0);
+        }
+      }
+      for (var r = 1; r <= 3; r++) {
+        beamXZ('fenceDark', x0, z0, x1, z1, h * (0.32 + r * 0.2), 0.045, 0.045);
+      }
+      // Sparse diagonal bracing keeps the chain-link read without a texture.
+      for (var d = 0; d < posts - 1; d++) {
+        var ax = x0 + dx * d / (posts - 1);
+        var az = z0 + dz * d / (posts - 1);
+        var bx = x0 + dx * (d + 1) / (posts - 1);
+        var bz = z0 + dz * (d + 1) / (posts - 1);
+        if (wire) wire.pipe(ax, h * 0.25, az, bx, h * 0.92, bz, 0.014, 4);
+      }
+    }
+
+    function addDockCrane(x, z) {
+      var steelDark = getBatch('steelDark');
+      var steel2 = getBatch('steel2');
+      var hazard = getBatch('hazard');
+      var rust = getBatch('rust');
+      if (!steelDark) return;
+      var legX = 18.6;
+      var legZ = 4.6;
+      var top = 9.4;
+      for (var sx = -1; sx <= 1; sx += 2) {
+        for (var sz = -1; sz <= 1; sz += 2) {
+          var px = x + sx * legX;
+          var pz = z + sz * legZ;
+          steelDark.box(px, top / 2, pz, 0.62, top, 0.62, 0);
+          steelDark.box(px, 0.22, pz, 1.1, 0.44, 1.1, 0);
+          addCollider(px, pz, 0.76, 0.76, 0, top);
+          addContactAO(px, pz, 1.7, 1.7, 0);
+          if (hazard) hazard.box(px, 1.2, pz, 0.7, 0.5, 0.7, 0);
+        }
+      }
+      // Main girder and lower chord.
+      beamXZ('steelDark', x - legX, z - legZ, x + legX, z - legZ, top, 0.48, 0.72);
+      beamXZ('steelDark', x - legX, z + legZ, x + legX, z + legZ, top, 0.48, 0.72);
+      beamXZ('steel2', x - legX, z - legZ, x + legX, z - legZ, top + 0.45, 0.1, 0.12);
+      beamXZ('steel2', x - legX, z + legZ, x + legX, z + legZ, top + 0.45, 0.1, 0.12);
+      for (var t = -legX + 2; t < legX; t += 3.1) {
+        steelDark.box(x + t, top - 0.55, z, 0.11, 1.1, 0.11, 0);
+        steel2.box(x + t, top - 1.05, z, 0.08, 0.08, 2 * legZ, 0);
+      }
+      // Trolley and hanging spreader over the container lane.
+      var tx = x + 5.4;
+      steelDark.box(tx, top - 1.0, z, 2.6, 1.0, 2.1, 0);
+      steel2.box(tx, top - 0.55, z, 1.2, 0.3, 1.3, 0);
+      for (var c = -1; c <= 1; c += 2) {
+        steel2.pipe(tx + c * 0.9, top - 1.2, z, tx + c * 0.9, 4.1, z, 0.035, 4);
+      }
+      steelDark.box(tx, 3.55, z, 3.4, 0.5, 3.0, 0);
+      if (hazard) {
+        for (var hz = -2; hz <= 2; hz++) {
+          hazard.box(tx, 3.84, z + hz * 0.55, 3.0, 0.08, 0.2, 0);
+        }
+      }
+      if (rust) {
+        rust.box(x - legX + 0.34, 3.2, z - legZ + 0.34, 0.3, 1.4, 0.02, 0);
+        rust.box(x + legX - 0.34, 4.3, z + legZ - 0.34, 0.24, 1.1, 0.02, 0);
+      }
+      // Overhead sign reads from the entrance approach.
+      addSignPanel(x, top + 1.15, z + legZ + 0.1, 0, 5.4, 1.05, 'DOCK CRANE 04', 'hazard');
+      addSignPanel(x, top + 2.15, z + legZ + 0.1, 0, 3.6, 0.62, 'CAP 32T', 'white');
+    }
+
+    function addForklift(x, z, yaw) {
+      var body = getBatch('containerOrange') || getBatch('steel');
+      var dark = getBatch('steelDeep');
+      var trim = getBatch('steel2');
+      var hazard = getBatch('hazard');
+      if (!body || !dark) return;
+      addContactAO(x, z, 3.1, 2.0, yaw);
+      body.box(x, 0.55, z, 1.7, 0.8, 1.05, yaw);
+      body.box(x, 1.15, z + 0.05, 0.9, 0.42, 0.9, yaw);
+      dark.box(x, 0.18, z, 1.8, 0.22, 1.1, yaw);
+      var p = localXZ(x, z, 0.35, 0.05, yaw);
+      dark.box(p[0], 1.5, p[1], 0.08, 1.2, 0.08, yaw);
+      if (trim) {
+        trim.box(p[0], 2.08, p[1], 0.08, 0.08, 0.9, yaw);
+        trim.box(x, 0.8, z + 0.58, 0.12, 0.12, 1.5, yaw);
+        for (var w = -1; w <= 1; w += 2) {
+          var wp = localXZ(x, z, w * 0.7, 0.72, yaw);
+          trim.box(wp[0], 0.35, wp[1], 0.28, 0.52, 0.28, yaw);
+        }
+      }
+      if (hazard) hazard.box(x, 0.48, z - 0.54, 1.2, 0.14, 0.03, yaw);
+      addCollider(x, z, 1.9, 1.2, 0, 1.65);
+    }
+
+    function addBollard(x, z, scale) {
       var b = getBatch('steelDark');
+      var cap = getBatch('hazard');
+      if (!b) return;
+      var r = 0.18 * (scale || 1);
+      var h = 0.72 * (scale || 1);
+      b.pipe(x, 0, z, x, h, z, r, 6);
+      b.box(x, 0.08, z, r * 3.2, 0.16, r * 3.2, 0);
+      if (cap) cap.box(x, h, z, r * 2.5, 0.1, r * 2.5, 0);
+      addCollider(x, z, r * 2.2, r * 2.2, 0, h);
+    }
+
+    function addPipeBollard(x, z) {
+      var b = getBatch('rubber') || getBatch('steelDeep');
+      if (!b) return;
+      b.box(x, 0.44, z, 0.42, 0.88, 0.42, 0);
+      var hz = getBatch('hazard');
+      if (hz) hz.box(x, 0.66, z, 0.44, 0.14, 0.44, 0);
+      addCollider(x, z, 0.46, 0.46, 0, 0.88);
+    }
+
+    function addIBeam(x, z, h, width, yaw) {      var b = getBatch('steelDark');
       var accent = getBatch('steel2');
       var rust = getBatch('rust');
       if (!b) return;
@@ -1310,9 +1585,9 @@
       var pylon = 0x3ec8dd;
       var beacon = 0x58ddff;
       var reflect = 0xff4fb8;
-      var fog = 0x03060c;
-      var near = 15;
-      var far = 47;
+      var fog = 0x6b3c4e;
+      var near = 21;
+      var far = 82;
       var fence = 0x4bb8c9;
       var fenceOpacity = 0;
       var barrier = false;
@@ -1322,17 +1597,17 @@
         line = 0x58ddff;
         pylon = 0x3ec8dd;
         beacon = 0x58ddff;
-        fog = 0x03070e;
-        near = 14;
-        far = 46;
+        fog = 0x6b3c4e;
+        near = 21;
+        far = 82;
       } else if (phase === 2) {
         line = 0x8ff4ff;
         pylon = 0x67e4ef;
         beacon = 0xffc45a;
         reflect = 0x9b6bff;
-        fog = 0x080b12;
-        near = 13;
-        far = 42;
+        fog = 0x4d2b4a;
+        near = 19;
+        far = 74;
         fence = 0xffc45a;
         fenceOpacity = 0.2;
         barrier = true;
@@ -1341,9 +1616,9 @@
         pylon = 0xff6b55;
         beacon = 0xff3d32;
         reflect = 0xff3d32;
-        fog = 0x170507;
-        near = 10;
-        far = 34;
+        fog = 0x3a1418;
+        near = 15;
+        far = 62;
         fence = 0xff4a3f;
         fenceOpacity = 0.35;
         barrier = true;
@@ -1353,9 +1628,9 @@
         pylon = 0x6dffb0;
         beacon = 0x6dffb0;
         reflect = 0x6dffb0;
-        fog = 0x030a0b;
-        near = 15;
-        far = 47;
+        fog = 0x123a3c;
+        near = 20;
+        far = 80;
       }
 
       arenaMood.lineMat.color.setHex(line);
@@ -1428,9 +1703,39 @@
     }
 
 
-    var ARENA = { minX: -21, maxX: 21, minZ: -17, maxZ: 17 };
+    // The dockyard runs linearly from the entrance yard at +Z toward the
+    // extraction pier at -Z.  46 x 67 walkable metres is roughly twice the
+    // footprint of the previous indoor arena while keeping the same scale.
+    var ARENA = { minX: -23, maxX: 23, minZ: -47.2, maxZ: 20 };
+    var BOSS_ARENA = { minX: -20.5, maxX: 20.5, minZ: -43.2, maxZ: -24 };
+    var ZONE = {
+      entrance: { minZ: 9.5, maxZ: 20, label: '入口堆场' },
+      containers: { minZ: -8.5, maxZ: 9.5, label: '集装箱区' },
+      loading: { minZ: -22.5, maxZ: -8.5, label: '装卸平台' },
+      boss: { minZ: -43.5, maxZ: -22.5, label: '开放船坞' },
+      extraction: { minZ: -47.2, maxZ: -43.5, label: '撤离码头' }
+    };
     var EYE = 1.62;
+    var PLAYER_HEIGHT = 1.78;
+    var STEP_HEIGHT = 0.36;
+    var GRAVITY = 16.5;
+    var JUMP_SPEED = 7.6;
     var colliders = [];
+    // Explicit whitelist of climbable top surfaces.  Visual props never
+    // implicitly become standable: only entries registered here are used by
+    // the vertical solver.
+    var standables = [];
+
+    function addStandable(cx, cz, sx, sz, top, label) {
+      standables.push({
+        minX: cx - sx / 2,
+        maxX: cx + sx / 2,
+        minZ: cz - sz / 2,
+        maxZ: cz + sz / 2,
+        top: top,
+        label: label || 'SURFACE'
+      });
+    }
 
     function addCollider(cx, cz, sx, sz, y0, y1) {
       colliders.push({
@@ -2143,33 +2448,904 @@
       beamXZ('steelDark', 10.2, -16, 10.2, 16, 4.22, 0.18, 0.2);
     }
 
+    /* ================================================================== *
+     * SUNSET DOCKYARD — outdoor replacement for the indoor block
+     *
+     * Layout, from the player spawn toward the extraction pier:
+     *   entrance yard -> container yard -> loading platform -> boss dock
+     *   -> extraction exit.
+     * All detail is merged procedural geometry except the small backdrop and
+     * the fixed supply / boss FX groups.  No textures, no network.
+     * ================================================================== */
+
+    var skyBackdrop = null;
+
+    function addSkyBand(y, h, hex) {
+      var mesh = new THREE.Mesh(G.plane, matBasic(hex, { fog: false }));
+      mesh.position.set(0, y, -118);
+      mesh.scale.set(280, h, 1);
+      scene.add(mesh);
+    }
+
+    function buildSkyBackdrop() {
+      // Bands are stacked to fake an orange-to-indigo sunset gradient.  They
+      // are ordinary unlit geometry, not a shader or an imported skybox.
+      addSkyBand(2.5, 13, 0xd9694a);
+      addSkyBand(8.2, 11, 0xff8b55);
+      addSkyBand(15.0, 10, 0x9a5478);
+      addSkyBand(23.0, 13, 0x533a72);
+      addSkyBand(35.0, 22, 0x241b3c);
+      addSkyBand(-6.0, 6, 0x3a2438);
+
+      var sunDisc = new THREE.Mesh(G.circle, matBasic(0xffd49a, {
+        transparent: true, opacity: 0.92, blending: 'additive',
+        depthWrite: false, fog: false
+      }));
+      sunDisc.position.set(-44, 15.5, -112);
+      sunDisc.rotation.x = Math.PI / 2;
+      sunDisc.scale.set(7.4, 7.4, 7.4);
+      scene.add(sunDisc);
+
+      var sunHalo = new THREE.Mesh(G.circle, matBasic(0xff7a4a, {
+        transparent: true, opacity: 0.2, blending: 'additive',
+        depthWrite: false, fog: false
+      }));
+      sunHalo.position.set(-44, 15.5, -112.5);
+      sunHalo.rotation.x = Math.PI / 2;
+      sunHalo.scale.set(19, 19, 19);
+      scene.add(sunHalo);
+
+      var cloudMat = matBasic(0x6d3c57, {
+        transparent: true, opacity: 0.42, depthWrite: false, fog: false
+      });
+      for (var i = 0; i < 9; i++) {
+        var cloud = new THREE.Mesh(G.box, cloudMat);
+        cloud.position.set(-58 + i * 16, 18 + (i % 3) * 3.4, -113);
+        cloud.scale.set(9 + (i % 4) * 5, 0.55 + (i % 2) * 0.35, 0.5);
+        scene.add(cloud);
+      }
+
+      // Fogged skyline and far gantry silhouettes.  fog:false keeps the
+      // silhouette from disappearing entirely into the orange haze.
+      var cityMat = matBasic(0x2a2038, { fog: false });
+      var cityLit = matBasic(0x7a5366, { fog: false });
+      for (var b = 0; b < 26; b++) {
+        var bx = -96 + b * 7.7;
+        var bh = 3.5 + hash2(b, 7) * 17;
+        var bz = -74 - hash2(b, 3) * 16;
+        var block = new THREE.Mesh(G.box, b > 6 && b < 20 ? cityLit : cityMat);
+        block.position.set(bx, bh / 2 - 0.3, bz);
+        block.scale.set(3.8 + hash2(b, 11) * 3.2, bh, 4.2);
+        scene.add(block);
+      }
+      for (var c = 0; c < 4; c++) {
+        var cx = -70 + c * 46;
+        var crane = new THREE.Mesh(G.box, cityMat);
+        crane.position.set(cx, 9, -88);
+        crane.scale.set(1.2, 18, 1.2);
+        scene.add(crane);
+        var arm = new THREE.Mesh(G.box, cityMat);
+        arm.position.set(cx + 8, 17.5, -88);
+        arm.scale.set(19, 0.7, 0.7);
+        scene.add(arm);
+        var arm2 = new THREE.Mesh(G.box, cityMat);
+        arm2.position.set(cx + 14, 11.5, -88);
+        arm2.scale.set(0.45, 12, 0.45);
+        scene.add(arm2);
+      }
+
+      var water = new THREE.Mesh(G.plane, IM.water);
+      water.position.set(0, -0.62, -82);
+      water.rotation.x = -Math.PI / 2;
+      water.scale.set(220, 76, 1);
+      scene.add(water);
+
+      // Long sunset glints on the water, merged into one additive batch.
+      for (var g = 0; g < 34; g++) {
+        var gx = -54 + hash2(g, 5) * 108;
+        var gz = -47 - hash2(g, 9) * 63;
+        var gw = 1.2 + hash2(g, 13) * 5.6;
+        var glint = getBatch('waterGlint');
+        if (glint) {
+          glint.box(gx, -0.53, gz, gw, 0.012, 0.06 + hash2(g, 17) * 0.12, 0);
+        }
+      }
+      skyBackdrop = { sunDisc: sunDisc, sunHalo: sunHalo };
+    }
+
+    function buildDockFloor() {
+      var ix, iz, x, z, i, key;
+      var bolt = getBatch('steel2');
+      var seam = getBatch('steelDeep');
+      for (ix = 0; ix < 18; ix++) {
+        for (iz = 0; iz < 27; iz++) {
+          x = -21.25 + ix * 2.5;
+          z = 18.75 - iz * 2.5;
+          var zone = z > 9.5 ? 0 : (z > -8.5 ? 1 : (z > -22.5 ? 2 : 3));
+          var h = hash2(ix + 2, iz + 5);
+          if (zone === 0) {
+            key = h < 0.28 ? 'quay' : (h < 0.62 ? 'asphaltWarm' : 'asphalt');
+          } else if (zone === 1) {
+            key = h < 0.2 ? 'quay' : (h < 0.58 ? 'asphalt' : 'asphaltWarm');
+          } else if (zone === 2) {
+            key = h < 0.34 ? 'quay' : (h < 0.72 ? 'asphalt' : 'asphaltWarm');
+          } else {
+            key = h < 0.3 ? 'asphaltWarm' : (h < 0.68 ? 'asphalt' : 'quay');
+          }
+          var b = getBatch(key);
+          if (b) b.box(x, 0.012, z, 2.42, 0.018, 2.42, 0);
+          if (hash2(iz, ix) > 0.48 && bolt) {
+            for (i = -1; i <= 1; i += 2) {
+              bolt.box(x + i * 1.02, 0.026, z - 1.02, 0.055, 0.014, 0.055, 0);
+              bolt.box(x + i * 1.02, 0.026, z + 1.02, 0.055, 0.014, 0.055, 0);
+            }
+          }
+          if (seam && (ix % 3 === 0 || iz % 4 === 0)) {
+            seam.box(x, 0.028, z, 2.46, 0.012, 0.035, 0);
+          }
+        }
+      }
+
+      // Oil, puddles and scrap: a handful of merged decals keeps the huge
+      // deck from reading as a flat empty plane.
+      for (i = 0; i < 34; i++) {
+        x = arand(-21, 21);
+        z = arand(-45, 18);
+        if (z < -22.5 && Math.abs(x) < 10 && Math.abs(z + 34) < 7) continue;
+        for (var k = 0; k < 3; k++) {
+          var ob = getBatch(k === 0 ? 'oil' : 'steelDeep');
+          if (ob) {
+            ob.box(x + arand(-0.5, 0.5), 0.034, z + arand(-0.4, 0.4),
+              arand(0.18, 0.8), 0.008, arand(0.06, 0.3), arand(-0.7, 0.7));
+          }
+        }
+      }
+      for (i = 0; i < 74; i++) {
+        var sb = getBatch(i % 4 === 0 ? 'rust' : 'steel2');
+        if (sb) {
+          sb.box(arand(-22, 22), 0.035, arand(-46, 19),
+            arand(0.1, 1.1), 0.007, 0.018, arand(0, 3.14));
+        }
+      }
+
+      // Zone thresholds and walk lanes.
+      hazardBandX(9.55, -22.2, 22.2, 0.3);
+      hazardBandX(-8.5, -22.2, 22.2, 0.42);
+      hazardBandX(-22.45, -22.2, 22.2, 0.44);
+      hazardBandX(-43.55, -22.2, 22.2, 0.3);
+      for (i = -2; i <= 2; i++) {
+        var lane = getBatch(i % 2 ? 'hazard' : 'hazardDark');
+        if (lane) {
+          lane.box(0, 0.038, 5.5, 0.16, 0.01, 35.0, 0);
+          lane.box(0, 0.038, -31.5, 0.16, 0.01, 22.0, 0);
+        }
+      }
+      var glowLine = getBatch('screen');
+      if (glowLine) {
+        for (var zz = 14; zz >= -42; zz -= 2.4) {
+          glowLine.box(-4.9, 0.039, zz, 0.035, 0.008, 1.1, 0);
+          glowLine.box(4.9, 0.039, zz, 0.035, 0.008, 1.1, 0);
+        }
+      }
+      drawFloorText('hazard', 0, 15.2, '07', 0.48);
+      drawFloorText('hazardDark', 0, 14.95, '07', 0.48);
+      drawFloorText('hazard', 0, -6.0, 'BAY A', 0.3);
+      drawFloorText('white', 14.0, -12.0, 'LOAD 04', 0.24);
+      drawFloorText('hazard', 0, -31.0, 'DOCK 4', 0.4);
+
+      // The boss deck keeps a wide hazard ring and a clear central lane.
+      for (i = 0; i < 40; i++) {
+        var a = i / 40 * Math.PI * 2;
+        var ring = getBatch(i % 2 ? 'hazardDark' : 'hazard');
+        if (ring) {
+          ring.box(Math.cos(a) * 7.2, 0.041, -34 + Math.sin(a) * 7.2,
+            0.44, 0.01, 0.16, -a);
+        }
+      }
+      addContactAO(0, -34, 18, 16, 0, true);
+    }
+
+    function buildDockPerimeter() {
+      var i, x, z;
+      var wall = getBatch('concreteDark');
+      var wall2 = getBatch('concrete');
+      var trim = getBatch('steelDark');
+      var roof = getBatch('steelDeep');
+      var bolt = getBatch('steel2');
+
+      // Entrance warehouse behind the spawn.  Its facade reads as a solid
+      // industrial backdrop and closes the +Z side of the yard.
+      for (i = 0; i < 7; i++) {
+        x = -20.4 + i * 6.8;
+        if (wall) wall.box(x, 3.4, 21.2, 6.5, 6.8, 2.2, 0);
+        if (wall2) wall2.box(x, 3.5, 20.05, 5.7, 5.6, 0.16, 0);
+        if (trim) {
+          trim.box(x, 6.9, 21.0, 6.7, 0.22, 2.4, 0);
+          trim.box(x, 0.35, 20.0, 5.8, 0.32, 0.24, 0);
+        }
+        if (bolt) {
+          bolt.box(x - 2.6, 0.55, 20.02, 0.09, 0.09, 0.12, 0);
+          bolt.box(x + 2.6, 0.55, 20.02, 0.09, 0.09, 0.12, 0);
+        }
+      }
+      addSignPanel(0, 5.2, 19.92, 0, 10.5, 1.25, 'SUNSET DOCKYARD 07', 'hazard');
+      addSignPanel(0, 3.7, 19.92, 0, 6.4, 0.8, 'BERTH 07 // EXTRACTION', 'white');
+      for (i = -2; i <= 2; i++) {
+        var door = getBatch('steelDeep');
+        if (door) door.box(i * 7.2, 2.1, 19.95, 3.2, 3.6, 0.12, 0);
+      }
+
+      // Long quay edges: visible drop to water plus a thin safety rail.  The
+      // player clamp sits just inside the rail so there is no accidental swim.
+      for (var side = -1; side <= 1; side += 2) {
+        x = side * 23.25;
+        for (z = 18; z >= -44; z -= 4.2) {
+          if (wall) wall.box(x, 0.1, z, 0.9, 1.4, 4.3, 0);
+          if (trim) trim.box(x, 0.78, z, 0.24, 0.1, 4.2, 0);
+        }
+        addGuardRail(side * 22.8, -8.0, side * 22.8, -43.4);
+        addFenceLine(side * 22.8, -7.8, side * 22.8, 8.8, 2.1);
+      }
+
+      // Dock edge at the boss arena, with a central extraction opening.
+      for (var ex = -1; ex <= 1; ex += 2) {
+        for (i = 0; i < 5; i++) {
+          x = ex * (5.6 + i * 3.8);
+          if (wall) wall.box(x, 0.12, -44.1, 3.6, 1.5, 0.9, 0);
+          addCollider(x, -44.1, 3.6, 0.9, 0, 1.0);
+        }
+        addGuardRail(ex * 5.2, -43.8, ex * 22.6, -43.8);
+      }
+      // Bollards line the edge but leave the exit lane clear.
+      for (i = -3; i <= 3; i++) {
+        if (i === 0) continue;
+        addBollard(i * 5.9, -43.2, 1.15);
+      }
+      addBollard(-10.2, -43.2, 1.0);
+      addBollard(10.2, -43.2, 1.0);
+
+      // Low maintenance shed on the east side of the entrance.
+      if (wall) wall.box(19.4, 1.7, 15.8, 5.4, 3.4, 5.8, 0);
+      if (roof) roof.box(19.4, 3.48, 15.8, 5.9, 0.2, 6.3, 0);
+      if (trim) trim.box(19.4, 2.6, 12.86, 5.5, 0.16, 0.14, 0);
+      addCollider(19.4, 15.8, 5.4, 5.8, 0, 3.5);
+      addSignPanel(16.62, 2.35, 14.5, -Math.PI / 2, 2.0, 0.55, 'MAINT', 'white');
+      addContactAO(19.4, 15.8, 6.4, 6.8, 0);
+
+      // Distant breakwater and channel marker silhouettes.
+      var marker = getBatch('hazard');
+      for (i = 0; i < 4; i++) {
+        if (marker) {
+          marker.box(-30 - i * 13, 1.2, -49 - i * 4, 0.5, 2.4, 0.5, 0);
+          marker.box(30 + i * 13, 1.2, -49 - i * 4, 0.5, 2.4, 0.5, 0);
+        }
+      }
+    }
+
+    function buildEntranceYard() {
+      var i;
+      // Entry gate: two braced posts and a readable header.
+      for (var side = -1; side <= 1; side += 2) {
+        addIBeam(side * 9.4, 9.7, 4.9, 0.85, 0);
+        addCollider(side * 9.4, 9.7, 0.9, 0.9, 0, 4.9);
+      }
+      beamXZ('steelDark', -9.4, 9.7, 9.4, 9.7, 4.55, 0.34, 0.48);
+      beamXZ('steel2', -9.4, 9.7, 9.4, 9.7, 4.9, 0.1, 0.12);
+      addSignPanel(0, 4.1, 9.78, 0, 6.6, 0.9, 'ENTRY 07', 'hazard');
+      addSignPanel(0, 3.35, 9.78, 0, 5.2, 0.45, 'SUNSET SHIFT // 18:40', 'white');
+
+      // Spawn-side props.  The low crates are explicit jump/step surfaces.
+      var c1 = getBatch('containerTeal');
+      if (c1) c1.box(-6.2, 0.31, 15.4, 1.5, 0.62, 1.1, 0.05);
+      addCollider(-6.2, 15.4, 1.5, 1.1, 0, 0.62);
+      addStandable(-6.2, 15.4, 1.5, 1.1, 0.62, 'ENTRY CRATE');
+      addCrate(-6.2, 0.62, 15.35, 0.9, 0.5, 0.8, -0.06, '');
+      addCollider(-6.2, 15.35, 0.9, 0.8, 0.62, 1.12);
+      addStandable(-6.2, 15.35, 0.9, 0.8, 1.12, 'ENTRY CRATE');
+
+      addCrate(6.4, 0, 16.2, 1.7, 0.85, 1.1, -0.04, 'danger');
+      addCollider(6.4, 16.2, 1.7, 1.1, 0, 0.85);
+      addStandable(6.4, 16.2, 1.7, 1.1, 0.85, 'ENTRY CRATE');
+      addCrate(6.3, 0.85, 16.1, 0.9, 0.45, 0.75, 0.1, '');
+      addCollider(6.3, 16.1, 0.9, 0.75, 0.85, 1.3);
+      addStandable(6.3, 16.1, 0.9, 0.75, 1.3, 'ENTRY CRATE');
+
+      addContainer(-15.5, 16.4, 3.2, 1.35, 2.3, 0, 'containerOrange', 0, {
+        standable: true, code: 'LOW-1'
+      });
+      addPallet(10.6, 15.1, 0.08);
+      addPallet(10.6, 13.7, 0.02);
+      addPallet(-12.4, 14.0, -0.1);
+      addBarrelCluster(-19.6, 17.2, 4);
+      addCollider(-19.6, 17.2, 1.4, 1.4, 0, 0.95);
+      addBarrelCluster(20.2, 18.2, 3);
+      addCollider(20.2, 18.2, 1.3, 1.3, 0, 0.95);
+      addControlCabinet(14.5, 18.6, Math.PI, 1.2, 1.6);
+      addCollider(14.5, 18.6, 1.25, 0.62, 0, 1.6);
+      addCrate(12.4, 0, 18.4, 1.1, 0.7, 0.8, 0.04, '');
+      addCollider(12.4, 18.4, 1.1, 0.8, 0, 0.7);
+      addStandable(12.4, 18.4, 1.1, 0.8, 0.7, 'ENTRY CRATE');
+
+      addFloorGrate(-13.6, 12.0, 1.8, 1.1);
+      addFloorGrate(13.4, 12.3, 1.6, 1.0);
+      addZoneLightPool(0, 14.8, 6.4, 'Warm');
+      addZoneLightPool(-8.2, 12.0, 2.8, 'Warm');
+      addZoneLightPool(8.2, 12.0, 2.8, 'Warm');
+      addReflectionFloor('reflectWarm', 0, 17.0, 0, 5.4, 0.3);
+      addReflectionFloor('reflectWarm', -8.2, 12.0, 0, 3.2, 0.16);
+      addReflectionFloor('reflectWarm', 8.2, 12.0, 0, 3.2, 0.16);
+      var barrier = getBatch('hazard');
+      if (barrier) {
+        for (i = -3; i <= 3; i++) {
+          if (Math.abs(i) < 2) continue;
+          barrier.box(i * 2.4, 0.62, 10.3, 1.3, 0.12, 0.12, 0);
+        }
+      }
+    }
+
+    function buildContainerYard() {
+      var i;
+      // Stacked ISO containers frame a clear central lane.  Heights vary and
+      // the palette rotates so the yard reads as a working terminal.
+      var left = [
+        [-14.9, 7.0, 6.0, 2.6, 2.45, 'containerBlue'],
+        [-15.1, 3.6, 6.2, 2.6, 2.45, 'containerRed'],
+        [-15.0, 0.0, 5.6, 2.0, 2.45, 'containerGreen'],
+        [-15.4, -4.0, 6.4, 2.6, 2.45, 'containerOrange'],
+        [-15.2, -7.4, 4.6, 1.35, 2.2, 'containerTeal']
+      ];
+      var right = [
+        [14.9, 8.2, 6.0, 2.0, 2.45, 'containerGreen'],
+        [15.0, 4.8, 5.6, 2.6, 2.45, 'containerPurple'],
+        [15.2, 1.2, 6.2, 2.6, 2.45, 'containerOrange'],
+        [14.8, -2.8, 5.4, 2.0, 2.45, 'containerBlue'],
+        [15.0, -6.6, 5.8, 2.6, 2.45, 'containerRed']
+      ];
+      for (i = 0; i < left.length; i++) {
+        var L = left[i];
+        addContainer(L[0], L[1], L[2], L[3], L[4], 0, L[5]);
+        if (i === 0 || i === 3) {
+          addContainer(L[0] - 0.2, L[1], L[2] * 0.92, 2.2, L[4], 0,
+            i === 0 ? 'containerRed' : 'containerTeal', L[3]);
+        }
+      }
+      for (i = 0; i < right.length; i++) {
+        var R = right[i];
+        addContainer(R[0], R[1], R[2], R[3], R[4], 0, R[5]);
+        if (i === 1 || i === 4) {
+          addContainer(R[0] + 0.15, R[1], R[2] * 0.9, 2.1, R[4], 0,
+            i === 1 ? 'containerBlue' : 'containerOrange', R[3]);
+        }
+      }
+
+      // Low standable boxes and pallets create the optional traversal route.
+      addContainer(-7.4, 3.4, 3.1, 1.35, 2.2, 0, 'containerTeal', 0, {
+        standable: true, code: 'LOW-2'
+      });
+      addContainer(7.3, -3.9, 3.3, 1.2, 2.25, 0, 'containerRed', 0, {
+        standable: true, code: 'LOW-3'
+      });
+      addContainer(6.8, 6.2, 2.4, 0.9, 1.6, 0.06, 'containerBlue', 0, {
+        standable: true, code: 'STEP-4'
+      });
+      addPallet(-6.9, -5.2, -0.06);
+      addPallet(-6.9, -3.7, 0.02);
+      addCrate(8.6, 0, 8.2, 1.35, 0.95, 1.0, 0.04, 'danger');
+      addCollider(8.6, 8.2, 1.35, 1.0, 0, 0.95);
+      addStandable(8.6, 8.2, 1.35, 1.0, 0.95, 'YARD CRATE');
+      addBarrelCluster(-20.2, 4.2, 4);
+      addCollider(-20.2, 4.2, 1.5, 1.5, 0, 0.95);
+      addBarrelCluster(20.0, -0.8, 4);
+      addCollider(20.0, -0.8, 1.5, 1.5, 0, 0.95);
+      addForklift(-9.7, 9.0, 0.35);
+      addFloorGrate(0, 6.4, 2.2, 1.3);
+      addFloorGrate(0, -1.2, 2.2, 1.3);
+
+      addSignPanel(-11.85, 2.4, 7.0, Math.PI / 2, 3.4, 0.75, 'BAY A', 'hazard');
+      addSignPanel(11.85, 2.2, 4.8, -Math.PI / 2, 3.4, 0.75, 'BAY B', 'hazard');
+      addSignPanel(-11.9, 4.55, -7.4, Math.PI / 2, 2.8, 0.6, 'DKY 441', 'white');
+      addSignPanel(11.9, 3.4, -6.6, -Math.PI / 2, 2.8, 0.6, 'DKY 208', 'white');
+
+      addDockCrane(0, 1.4);      addZoneLightPool(0, 1.4, 5.2, 'Warm');
+      addReflectionFloor('reflectWarm', 0, 4.0, 0, 7.0, 0.42);
+      addReflectionFloor('reflectWarm', -7.4, 3.4, Math.PI / 2, 4.0, 0.2);
+      addReflectionFloor('reflectWarm', 7.3, -3.9, Math.PI / 2, 4.0, 0.2);
+    }
+
+    function buildLoadingPlatform() {
+      var p = getBatch('quay');
+      var edge = getBatch('steelDark');
+      var trim = getBatch('steel2');
+      var hazard = getBatch('hazard');
+      var px = 14.0, pz = -16.0, pw = 13.0, pd = 11.0, ph = 0.62;
+      if (p) {
+        p.box(px, ph / 2, pz, pw, ph, pd, 0);
+        p.box(px, ph + 0.08, pz + pd / 2, pw, 0.18, 0.24, 0);
+        p.box(px, ph + 0.08, pz - pd / 2, pw, 0.18, 0.24, 0);
+        p.box(px + pw / 2, ph + 0.08, pz, 0.24, 0.18, pd, 0);
+      }
+      if (edge) {
+        edge.box(px, ph + 0.04, pz, pw + 0.12, 0.1, pd + 0.12, 0);
+      }
+      if (hazard) {
+        hazard.box(px, ph + 0.1, pz + pd / 2 - 0.35, pw - 0.4, 0.05, 0.18, 0);
+        hazard.box(px, ph + 0.1, pz - pd / 2 + 0.35, pw - 0.4, 0.05, 0.18, 0);
+      }
+      addCollider(px, pz, pw, pd, 0, ph);
+      addStandable(px, pz, pw, pd, ph, 'LOADING PLATFORM');
+      addContactAO(px, pz, pw * 1.12, pd * 1.12, 0);
+      // Step pallet so the platform can be entered without a huge jump.
+      addPallet(px, pz + pd / 2 + 0.75, 0, 0.0);
+      var step = getBatch('quay');
+      if (step) step.box(px, 0.17, pz + pd / 2 + 0.72, 2.2, 0.34, 1.3, 0);
+      addCollider(px, pz + pd / 2 + 0.72, 2.2, 1.3, 0, 0.34);
+      addStandable(px, pz + pd / 2 + 0.72, 2.2, 1.3, 0.34, 'LOADING STEP');
+
+      // Repair gantry / welding frame on the platform.
+      for (var side = -1; side <= 1; side += 2) {
+        addIBeam(px + side * 3.2, pz - 3.4, 3.4, 0.55, 0);
+        addCollider(px + side * 3.2, pz - 3.4, 0.6, 0.6, 0, 3.4);
+      }
+      beamXZ('steelDark', px - 3.2, pz - 3.4, px + 3.2, pz - 3.4, 3.3, 0.24, 0.3);
+      addSignPanel(px, 2.75, pz - 3.32, 0, 3.6, 0.62, 'REPAIR 04', 'hazard');
+      addControlCabinet(5.6, -16.8, Math.PI, 1.15, 1.55);
+      addCollider(5.6, -16.8, 1.2, 0.6, 0, 1.55);
+      addCrate(px - 3.8, ph, pz + 1.0, 1.2, 0.8, 0.9, 0.04, 'danger');
+      addCollider(px - 3.8, pz + 1.0, 1.2, 0.9, ph, ph + 0.8);
+      addStandable(px - 3.8, pz + 1.0, 1.2, 0.9, ph + 0.8, 'REPAIR CRATE');
+      addBarrelCluster(5.8, -20.8, 3);
+      addCollider(5.8, -20.8, 1.3, 1.3, 0, 0.95);
+
+      addContainer(14.0, -19.0, 4.2, 1.1, 2.2, 0.04, 'containerGreen', ph, {
+        standable: true, code: 'REPAIR-1'
+      });
+      // Two fixed turret pedestals for wave 2.  Their tops are not in the
+      // traversal whitelist; the turrets sit on them instead.
+      for (var tp = -1; tp <= 1; tp += 2) {
+        var tpx = tp * 19.5;
+        var tpz = tp < 0 ? -18.5 : -8.5;
+        var ped = getBatch('concreteDark');
+        if (ped) ped.box(tpx, 0.8, tpz, 2.3, 1.6, 2.3, 0);
+        addCollider(tpx, tpz, 2.3, 2.3, 0, 1.6);
+        var pedGlow = getBatch('hazard');
+        if (pedGlow) pedGlow.box(tpx, 1.5, tpz + 1.17, 1.6, 0.16, 0.03, 0);
+      }
+      addCrate(8.4, 0, -8.6, 1.5, 0.9, 1.0, -0.05, '');
+      addCollider(8.4, -8.6, 1.5, 1.0, 0, 0.9);
+      addStandable(8.4, -8.6, 1.5, 1.0, 0.9, 'LOAD CRATE');
+      addForklift(5.4, -13.1, -0.3);
+      addBarrelCluster(-20.5, -14.5, 4);
+      addCollider(-20.5, -14.5, 1.5, 1.5, 0, 0.95);
+
+      addZoneLightPool(px, pz, 5.0, 'Warm');
+      addReflectionFloor('reflectWarm', px, pz + 4.0, 0, 6.0, 0.34);
+      addReflectionFloor('reflectWarm', 14.0, -19.0, 0, 3.3, 0.18);
+    }
+
+    function buildBossDock() {
+      var i;
+      var hazard = getBatch('hazard');
+      var dark = getBatch('steelDark');
+      var trim = getBatch('steel2');
+      var rust = getBatch('rust');
+      var corners = [
+        [-19.1, -25.6, 0x3ec8dd],
+        [19.1, -25.6, 0x3ec8dd],
+        [-19.1, -41.8, 0x3ec8dd],
+        [19.1, -41.8, 0x3ec8dd]
+      ];
+      for (i = 0; i < corners.length; i++) {
+        addBossPylon(corners[i][0], corners[i][1]);
+        addCollider(corners[i][0], corners[i][1], 1.15, 1.15, 0, 4.3);
+      }
+      for (i = 0; i < 4; i++) {
+        var a = i / 4 * Math.PI * 2;
+        var ring = new THREE.Mesh(G.ring, IM.fxPylon);
+        ring.position.set(Math.cos(a) * 4.1, 0.06, -34 + Math.sin(a) * 4.1);
+        ring.scale.set(0.56, 1, 0.56);
+        ring.rotation.z = 0.12;
+        scene.add(ring);
+        energyRings.push({ mesh: ring, speed: 0.35 + i * 0.1, axis: 'flat', base: 0.12 });
+      }
+      var inside = new THREE.Mesh(G.ring, IM.fxLine);
+      inside.position.set(0, 0.07, -34);
+      inside.scale.set(4.6, 1, 4.6);
+      inside.rotation.z = 0.05;
+      scene.add(inside);
+      energyRings.push({ mesh: inside, speed: 0.14, axis: 'flat', base: 0.05 });
+
+      // Boss gateway frame sits behind the arena, not over the combat lane.
+      for (var s = -1; s <= 1; s += 2) {
+        if (dark) dark.box(s * 21.4, 3.0, -24.2, 0.6, 6.0, 0.6, 0);
+        addCollider(s * 21.4, -24.2, 0.65, 0.65, 0, 6.0);
+      }
+      beamXZ('steelDark', -21.4, -24.2, 21.4, -24.2, 5.9, 0.4, 0.55);
+      beamXZ('steel2', -21.4, -24.2, 21.4, -24.2, 6.25, 0.1, 0.12);
+      addSignPanel(0, 5.2, -24.05, 0, 7.2, 0.95, 'GATEKEEPER ZERO', 'hazard');
+      addSignPanel(0, 4.35, -24.05, 0, 5.0, 0.5, 'AUTHORIZED BREACH ONLY', 'white');
+
+      // Side cover: containers at the edge, deliberately not standable, so
+      // the open arena cannot be turned into a high camping spot.
+      addContainer(-21.0, -30.0, 3.2, 2.6, 7.2, Math.PI / 2, 'containerRed');
+      addContainer(-21.0, -38.0, 3.2, 2.0, 6.0, Math.PI / 2, 'containerBlue');
+      addContainer(21.0, -30.0, 3.2, 2.6, 7.2, -Math.PI / 2, 'containerGreen');
+      addContainer(21.0, -38.0, 3.2, 2.0, 6.0, -Math.PI / 2, 'containerOrange');
+      addBarrelCluster(-17.2, -42.4, 3);
+      addBarrelCluster(17.2, -42.4, 3);
+      addCollider(-17.2, -42.4, 1.3, 1.3, 0, 0.95);
+      addCollider(17.2, -42.4, 1.3, 1.3, 0, 0.95);
+
+      // Broken gantry and service cables overhead add depth without cover.
+      beamXZ('steelDark', -12.0, -26.0, 12.0, -26.0, 6.8, 0.2, 0.26);
+      if (rust) {
+        rust.box(-11.8, 6.4, -26.0, 0.3, 0.7, 0.06, 0);
+        rust.box(11.6, 6.3, -26.0, 0.25, 0.8, 0.06, 0);
+      }
+      var cable = getBatch('cable');
+      if (cable) {
+        cable.pipe(-21.0, 5.4, -27.0, -15.0, 4.6, -31.0, 0.045, 5);
+        cable.pipe(-15.0, 4.6, -31.0, -18.5, 3.9, -36.0, 0.04, 5);
+        cable.pipe(21.0, 5.2, -28.0, 16.0, 4.4, -33.0, 0.045, 5);
+      }
+
+      addReflectionFloor('reflectBoss', 0, -34.0, 0, 6.4, 0.72);
+      addReflectionFloor('reflectBoss', -3.4, -34.0, Math.PI / 2, 4.6, 0.32);
+      addReflectionFloor('reflectBoss', 3.4, -34.0, Math.PI / 2, 4.6, 0.32);
+      addReflectionWall('reflectBoss', -22.6, 1.6, -34.0, Math.PI / 2, 8.0, 2.6);
+      addReflectionWall('reflectBoss', 22.6, 1.6, -34.0, -Math.PI / 2, 8.0, 2.6);
+      addReflectionFloor('reflectExit', 0, -44.6, 0, 4.2, 0.42);
+      addReflectionFloor('reflectExit', 0, -45.9, 0, 0.24, 4.3);
+
+      var arenaGlowMat = matBasic(0x58ddff, {
+        transparent: true, opacity: 0.04, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var arenaGlowCoreMat = matBasic(0x9ff2ff, {
+        transparent: true, opacity: 0.07, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var arenaGlow = new THREE.Mesh(G.circle, arenaGlowMat);
+      arenaGlow.position.set(0, 0.066, -34);
+      arenaGlow.scale.set(7.2, 1, 7.2);
+      scene.add(arenaGlow);
+      var arenaCore = new THREE.Mesh(G.circle, arenaGlowCoreMat);
+      arenaCore.position.set(0, 0.068, -34);
+      arenaCore.scale.set(2.8, 1, 2.8);
+      scene.add(arenaCore);
+      for (var pg = -1; pg <= 1; pg += 2) {
+        var pylonGlow = new THREE.Mesh(G.circle, arenaGlowMat);
+        pylonGlow.position.set(pg * 19.1, 0.067, -25.6);
+        pylonGlow.scale.set(2.5, 1, 2.5);
+        scene.add(pylonGlow);
+        var pylonColumn = new THREE.Mesh(G.box, arenaGlowCoreMat);
+        pylonColumn.position.set(pg * 19.1, 2.1, -25.6);
+        pylonColumn.scale.set(0.46, 4.1, 0.46);
+        scene.add(pylonColumn);
+      }
+
+      var beaconMat = matBasic(0x58ddff, {
+        transparent: true, opacity: 0.75, blending: 'additive', depthWrite: false, fog: false
+      });
+      var beacons = [];
+      var beaconPos = [
+        [-18.4, -25.0], [18.4, -25.0], [-18.4, -42.2], [18.4, -42.2]
+      ];
+      for (i = 0; i < beaconPos.length; i++) {
+        var beacon = new THREE.Mesh(G.box, beaconMat);
+        beacon.position.set(beaconPos[i][0], 4.0, beaconPos[i][1]);
+        beacon.scale.set(0.11, 0.42, 0.11);
+        scene.add(beacon);
+        beacons.push(beacon);
+      }
+
+      var fenceMat = matBasic(0x4bb8c9, {
+        transparent: true, opacity: 0.18, blending: 'additive', depthWrite: false, fog: false
+      });
+      var barrierGroup = new THREE.Group();
+      addFenceAssembly(barrierGroup, fenceMat, -20.1, -34.0, 17.0, 3.6, Math.PI / 2);
+      addFenceAssembly(barrierGroup, fenceMat, 20.1, -34.0, 17.0, 3.6, -Math.PI / 2);
+      barrierGroup.visible = false;
+      scene.add(barrierGroup);
+
+      var narrowMat = matBasic(0xff4a3f, {
+        transparent: true, opacity: 0.25, blending: 'additive', depthWrite: false, fog: false
+      });
+      var narrowGroup = new THREE.Group();
+      addFenceAssembly(narrowGroup, narrowMat, -16.4, -34.0, 15.0, 3.5, Math.PI / 2);
+      addFenceAssembly(narrowGroup, narrowMat, 16.4, -34.0, 15.0, 3.5, -Math.PI / 2);
+      narrowGroup.visible = false;
+      scene.add(narrowGroup);
+
+      addWallVent(-22.8, 3.0, -31.0, Math.PI / 2, 2.2, 1.2);
+      addWallVent(22.8, 3.0, -31.0, -Math.PI / 2, 2.2, 1.2);
+
+      arenaMood = {
+        phase: 0,
+        lastPhase: 0,
+        lineMat: IM.fxLine,
+        pylonMat: IM.fxPylon,
+        beaconMat: beaconMat,
+        fenceMat: fenceMat,
+        barrierGroup: barrierGroup,
+        narrowGroup: narrowGroup,
+        narrowMat: narrowMat,
+        arenaGlowMat: arenaGlowMat,
+        arenaGlowCoreMat: arenaGlowCoreMat,
+        beacons: beacons,
+        near: 21,
+        far: 82,
+        sparkPoint: new THREE.Vector3(21.0, 4.0, -31.0),
+        sparkT: 1.4
+      };
+    }
+
+    function buildDockLamps() {
+      addDockLamp(-8.2, 12.0, 4.5, 0xffb153, 'lampWarm');
+      addDockLamp(8.2, 12.0, 4.5, 0xffb153, 'lampWarm');
+      addDockLamp(-21.0, 8.4, 6.0, 0xffb153, 'lampWarm');
+      addDockLamp(21.0, 8.4, 6.0, 0xffb153, 'lampWarm');
+      addDockLamp(-21.0, -5.0, 6.0, 0xffb153, 'lampWarm');
+      addDockLamp(21.0, -5.0, 6.0, 0xffb153, 'lampWarm');
+      addDockLamp(20.8, -12.4, 6.2, 0xffb153, 'lampWarm');
+      addDockLamp(-20.8, -21.0, 5.8, 0xffb153, 'lampWarm');
+      addDockLamp(-19.5, -43.0, 5.2, 0x8fe6ff, 'lampCool');
+      addDockLamp(19.5, -43.0, 5.2, 0x8fe6ff, 'lampCool');
+    }
+
+    function buildSupplyStations() {
+      for (var i = 0; i < supplyStations.length; i++) {
+        var st = supplyStations[i];
+        var group = new THREE.Group();
+        group.position.set(st.x, st.baseY, st.z);
+        // Both panels face the lane the player arrives from.
+        group.rotation.y = st.id === 'repair' ? Math.PI : 0;
+        scene.add(group);
+
+        var bodyMat = matLambert(0x3a3f46, { specular: 0.38, roughness: 0.42 });
+        var trimMat = matLambert(0x8a6a3a, { specular: 0.5, roughness: 0.3 });
+        var panelMat = matBasic(0x281a0e);
+        var base = new THREE.Mesh(G.box, bodyMat);
+        base.position.set(0, 0.22, 0);
+        base.scale.set(1.5, 0.44, 1.0);
+        group.add(base);
+        var top = new THREE.Mesh(G.box, trimMat);
+        top.position.set(0, 0.47, 0);
+        top.scale.set(1.6, 0.08, 1.08);
+        group.add(top);
+        var panel = new THREE.Mesh(G.box, panelMat);
+        panel.position.set(0, 0.72, -0.18);
+        panel.scale.set(0.7, 0.42, 0.08);
+        group.add(panel);
+
+        st.lampMat = matBasic(C.amber, {
+          transparent: true, opacity: 0.72, blending: 'additive',
+          depthWrite: false, fog: false
+        });
+        var lamp = new THREE.Mesh(G.box, st.lampMat);
+        lamp.position.set(0, 0.76, -0.14);
+        lamp.scale.set(0.5, 0.09, 0.04);
+        group.add(lamp);
+        st.lamp = lamp;
+
+        st.ringMat = matBasic(C.amber, {
+          transparent: true, opacity: 0.5, blending: 'additive',
+          depthWrite: false, fog: false
+        });
+        var ring = new THREE.Mesh(G.ring, st.ringMat);
+        ring.position.set(0, 0.56, 0);
+        ring.scale.set(0.82, 0.82, 0.82);
+        group.add(ring);
+        st.ring = ring;
+
+        var coreMat = matBasic(C.amber, {
+          transparent: true, opacity: 0.16, blending: 'additive',
+          depthWrite: false, fog: false
+        });
+        var core = new THREE.Mesh(G.circle, coreMat);
+        core.position.set(0, 0.06, 0);
+        core.scale.set(1.35, 1.35, 1.35);
+        group.add(core);
+        st.core = core;
+        st.coreMat = coreMat;
+
+        // Two canisters make the station read as a resupply cache from afar.
+        var canMat = matLambert(0x6b4a2a, { specular: 0.42, roughness: 0.4 });
+        for (var c = -1; c <= 1; c += 2) {
+          var can = new THREE.Mesh(G.cylinder, canMat);
+          can.position.set(c * 0.46, 0.32, 0.34);
+          can.scale.set(0.16, 0.42, 0.16);
+          group.add(can);
+        }
+        var post = new THREE.Mesh(G.box, trimMat);
+        post.position.set(0.66, 1.15, 0.12);
+        post.scale.set(0.07, 1.5, 0.07);
+        group.add(post);
+        var sign = new THREE.Mesh(G.box, st.lampMat);
+        sign.position.set(0.66, 1.82, 0.12);
+        sign.scale.set(0.44, 0.3, 0.06);
+        group.add(sign);
+
+        st.group = group;
+        addCollider(st.x, st.z, 1.55, 1.05, st.baseY, st.baseY + 0.52);
+        addStandable(st.x, st.z, 1.55, 1.05, st.baseY + 0.52, 'SUPPLY CACHE');
+        addFloorGlow(st.x, st.z, 1.75, C.amber, 0.05);
+      }
+    }
+
+    function nearestSupply(range) {
+      var best = null;
+      var bestD = range;
+      for (var i = 0; i < supplyStations.length; i++) {
+        var st = supplyStations[i];
+        var d = dist2D(player.pos, st);
+        if (d < bestD) {
+          bestD = d;
+          best = st;
+        }
+      }
+      return best;
+    }
+
+    function supplyNeeded() {
+      return player.hp < player.maxHp - 0.01 ||
+        weapons[0].reserve < WEAPON_DEFS[0].reserveMax ||
+        weapons[1].reserve < WEAPON_DEFS[1].reserveMax;
+    }
+
+    function canResupply(st) {
+      return !!st && st.cooldown <= 0 && supplyNeeded();
+    }
+
+    function cancelSupply() {
+      supply.active = false;
+      supply.station = null;
+      supply.progress = 0;
+      supply.startX = player.pos.x;
+      supply.startZ = player.pos.z;
+    }
+
+    function finishSupply(st) {
+      if (!canResupply(st)) {
+        cancelSupply();
+        return;
+      }
+      player.hp = Math.min(player.maxHp, player.hp + 40);
+      weapons[0].reserve = Math.min(WEAPON_DEFS[0].reserveMax, weapons[0].reserve + 50);
+      weapons[1].reserve = Math.min(WEAPON_DEFS[1].reserveMax, weapons[1].reserve + 16);
+      st.cooldown = SUPPLY_COOLDOWN;
+      addToast('补给完成 // +40 HP / 步枪 +50 / 散射 +16', 'good');
+      flashScreen(0x5affb0, false);
+      spawnRingFx(new THREE.Vector3(st.x, st.baseY + 0.12, st.z),
+        2.6, 0x5affb0, 0.45, st.baseY + 0.12);
+      spawnParticles(new THREE.Vector3(st.x, st.baseY + 0.9, st.z),
+        0xffc861, 12, 3.6, 0.35, 0.04);
+      cancelSupply();
+      updateHud();
+    }
+
+    function tryStartSupply() {
+      if (mode !== 'playing' || supply.active || player.slashT > 0 ||
+        !player.grounded || player.dashT > 0) return false;
+      var st = nearestSupply(SUPPLY_RANGE);
+      if (!st || !canResupply(st)) return false;
+      supply.active = true;
+      supply.station = st;
+      supply.progress = 0;
+      supply.startX = player.pos.x;
+      supply.startZ = player.pos.z;
+      input.fireHeld = false;
+      input.fireQueued = false;
+      return true;
+    }
+
+    function updateSupply(dt) {
+      if (mode !== 'playing') {
+        if (supply.active) cancelSupply();
+        updateSupplyHud();
+        return;
+      }
+      for (var i = 0; i < supplyStations.length; i++) {
+        supplyStations[i].cooldown = Math.max(0, supplyStations[i].cooldown - dt);
+      }
+      supply.near = nearestSupply(SUPPLY_RANGE);
+      var moveHeld = input.keys.KeyW || input.keys.KeyA ||
+        input.keys.KeyS || input.keys.KeyD;
+
+      if (supply.active) {
+        var moved = Math.abs(player.pos.x - supply.startX) +
+          Math.abs(player.pos.z - supply.startZ);
+        if (!supply.near || supply.near !== supply.station ||
+          !input.keys.KeyE || !player.grounded || moved > 0.22 || moveHeld) {
+          cancelSupply();
+          addToast('补给中断 // 保持静止并按住 E', 'warn');
+        } else {
+          supply.progress += dt;
+          if (supply.progress >= SUPPLY_TIME) {
+            finishSupply(supply.station);
+          }
+        }
+      }
+
+      if (!supply.active && supply.near && input.keys.KeyE && !moveHeld &&
+        player.grounded && player.dashT <= 0 && canResupply(supply.near) &&
+        player.slashT <= 0) {
+        supply.active = true;
+        supply.station = supply.near;
+        supply.progress = 0;
+        supply.startX = player.pos.x;
+        supply.startZ = player.pos.z;
+        input.fireHeld = false;
+        input.fireQueued = false;
+      }
+
+      updateSupplyVisuals();
+      updateSupplyHud();
+    }
+
+    function updateSupplyVisuals() {
+      var pulse = 0.5 + 0.5 * Math.sin(worldClock * 3.4);
+      for (var i = 0; i < supplyStations.length; i++) {
+        var st = supplyStations[i];
+        if (!st.group) continue;
+        var active = supply.active && supply.station === st;
+        var cooling = st.cooldown > 0;
+        var full = !cooling && !supplyNeeded();
+        var col = active ? C.cyan : (full ? C.green : (cooling ? 0x6f8ba6 : C.amber));
+        if (st.lampMat) {
+          st.lampMat.color.setHex(col);
+          st.lampMat.opacity = active ? 0.9 : (cooling ? 0.22 : 0.55 + pulse * 0.25);
+        }
+        if (st.ringMat) {
+          st.ringMat.color.setHex(col);
+          st.ringMat.opacity = active ? 0.8 : (cooling ? 0.08 : 0.22 + pulse * 0.18);
+        }
+        if (st.coreMat) st.coreMat.color.setHex(col);
+        if (st.ring) st.ring.rotation.y += 0.009 + (active ? 0.02 : 0);
+        if (st.lamp) st.lamp.scale.y = 0.07 + pulse * 0.04;
+      }
+    }
+
+    function updateSupplyHud() {
+      if (!ui.supplyPanel) return;
+      var st = supply.active ? supply.station : supply.near;
+      if (!st || mode !== 'playing') {
+        ui.supplyPanel.hidden = true;
+        return;
+      }
+      ui.supplyPanel.hidden = false;
+      setText(ui.supplyName, st.name);
+      var cls = ui.supplyPanel.classList;
+      cls.remove('is-cooling', 'is-full', 'is-active');
+      if (supply.active && supply.station === st) {
+        cls.add('is-active');
+        setText(ui.supplyState, 'SUPPLYING // ' + Math.round(supply.progress / SUPPLY_TIME * 100) + '%');
+        ui.supplyFill.style.width = (supply.progress / SUPPLY_TIME * 100).toFixed(1) + '%';
+      } else if (st.cooldown > 0) {
+        cls.add('is-cooling');
+        setText(ui.supplyState, 'COOLDOWN // ' + st.cooldown.toFixed(1) + 's');
+        ui.supplyFill.style.width = ((1 - st.cooldown / SUPPLY_COOLDOWN) * 100).toFixed(1) + '%';
+      } else if (!supplyNeeded()) {
+        cls.add('is-full');
+        setText(ui.supplyState, 'FULL // HP 与备弹已满');
+        ui.supplyFill.style.width = '100%';
+      } else {
+        setText(ui.supplyState, 'READY // 按住 E 补给');
+        ui.supplyFill.style.width = '0%';
+      }
+    }
+
     function buildArena() {
-      var floor = new THREE.Mesh(G.plane, matLambert(0x161b21));
-      floor.position.set(0, 0, 0);
-      floor.rotation.x = -Math.PI / 2;
-      floor.scale.set(44, 36, 1);
-      scene.add(floor);
-
-      var ceiling = new THREE.Mesh(G.plane, matLambert(0x090d12));
-      ceiling.position.set(0, 4.5, 0);
-      ceiling.rotation.x = Math.PI / 2;
-      ceiling.scale.set(44, 36, 1);
-      scene.add(ceiling);
-
-      // Perimeter walls keep their original collision volumes.
-      addBox(0, 2.25, -17.6, 44, 4.5, 1.2, IM.concreteDark, true);
-      addBox(0, 2.25, 17.6, 44, 4.5, 1.2, IM.concreteDark, true);
-      addBox(-21.6, 2.25, 0, 1.2, 4.5, 36, IM.concreteDark, true);
-      addBox(21.6, 2.25, 0, 1.2, 4.5, 36, IM.concreteDark, true);
-
-      buildFloorPlates();
-      buildIndustrialWalls();
-      buildCoverProps();
-      buildEntryZone();
-      buildPipeCorridor();
-      buildEnergyHall();
-      buildServiceLights();
-      buildBossArena();
+      // Outdoor sunset dockyard, linear from the entrance at +Z to the
+      // extraction pier at -Z.  The former indoor shell is intentionally gone.
+      buildSkyBackdrop();
+      buildDockFloor();
+      buildDockPerimeter();
+      buildEntranceYard();
+      buildContainerYard();
+      buildLoadingPlatform();
+      buildBossDock();
+      buildDockLamps();
+      buildSupplyStations();
       commitArt();
       buildContactShadowPool();
       buildExit();
@@ -2188,12 +3364,14 @@
       buildLaserPool();
       buildShockwavePool();
       buildSparkPool();
+      buildSlashPool();
+      buildEnemyPools();
       setArenaPhase(0);
     }
 
     var exit = {
       unlocked: false,
-      pos: new THREE.Vector3(0, 1.5, -16.25),
+      pos: new THREE.Vector3(0, 1.5, -45.35),
       group: null,
       ring: null,
       glow: null,
@@ -2339,34 +3517,32 @@
     }
 
     function buildLocalLightRig() {
-      // Entry is keyed cold cyan; the warm maintenance lamps remain as warm
-      // accents, so the threshold reads cold without losing the V1 fixtures.
+      // Warm gate light, cool container spill, amber loading lamp, boss
+      // approach fill, boss core and exit.  Only five are active at once.
       registerLocalLight('entry', {
-        x: 0, y: 3.55, z: 9.8, hex: 0x8fe6ff,
-        intensity: 1.0, range: 8.6, priority: 1.6
+        x: 0, y: 3.7, z: 10.4, hex: 0xff9a4a,
+        intensity: 1.05, range: 10.2, priority: 1.7
       });
       registerLocalLight('lamp', {
-        x: 0, y: 3.65, z: 12.7, hex: 0xffa95c,
-        intensity: 0.85, range: 7.5, priority: 1.15
+        x: 6.8, y: 3.6, z: 4.6, hex: 0x7fc8e8,
+        intensity: 0.8, range: 9.2, priority: 1.15
       });
-      // Oxidised pipe bay: warm orange spill against the cold corridor.
       registerLocalLight('pipe', {
-        x: 18.2, y: 2.5, z: 1.6, hex: 0xff5f2e,
-        intensity: 0.9, range: 7.4, priority: 1.45
+        x: 13.5, y: 3.0, z: -16.0, hex: 0xffa95c,
+        intensity: 0.95, range: 9.6, priority: 1.45
       });
-      // Central energy core, always on and gently pulsing.
       registerLocalLight('core', {
-        x: 0, y: 2.55, z: -2.5, hex: 0x4fd8ff,
-        intensity: 1.1, range: 8.4, priority: 1.85
+        x: 0, y: 3.0, z: -25.8, hex: 0x58ddff,
+        intensity: 0.95, range: 10.0, priority: 1.8
       });
       // Boss core light is created once and follows the active core.
       registerLocalLight('boss', {
-        x: 0, y: 2.5, z: -9, hex: 0xff4fb8,
+        x: 0, y: 2.5, z: -34, hex: 0xff4fb8,
         intensity: 0, range: 10.2, priority: 3.0, enabled: false
       });
       // Exit gate is red while locked and green once the boss is down.
       registerLocalLight('exit', {
-        x: 0, y: 2.35, z: -16.05, hex: 0xff4d6d,
+        x: 0, y: 2.35, z: -45.15, hex: 0xff4d6d,
         intensity: 0.85, range: 7.2, priority: 2.0
       });
     }
@@ -2559,14 +3735,14 @@
 
     function buildCinematicVolumes() {
       var lamps = [
-        [-14, -12.6, 0x57ddff, 0xd6fbff],
-        [14, -12.6, 0x57ddff, 0xd6fbff],
-        [-14, 1.8, 0x8defff, 0xe3ffff],
-        [14, 1.8, 0x8defff, 0xe3ffff],
-        [0, 12.8, 0xffb153, 0xffefd0],
-        [0, 5.2, 0x57ddff, 0xd6fbff],
-        [-13.5, 12.7, 0xffb153, 0xffefd0],
-        [13.5, 12.7, 0xffb153, 0xffefd0]
+        [-8.2, 12.0, 0xffb153, 0xffefd0],
+        [8.2, 12.0, 0xffb153, 0xffefd0],
+        [-21.0, 8.4, 0xffb153, 0xffefd0],
+        [21.0, 8.4, 0xffb153, 0xffefd0],
+        [-21.0, -5.0, 0xffb153, 0xffefd0],
+        [21.0, -5.0, 0xffb153, 0xffefd0],
+        [20.8, -12.4, 0xffb153, 0xffefd0],
+        [-20.8, -21.0, 0xffb153, 0xffefd0]
       ];
       var i;
       for (i = 0; i < lamps.length; i++) {
@@ -2580,31 +3756,31 @@
         if (lampBeam) volumeFx.lampBeams.push(lampBeam);
       }
 
-      // Oxidised pipe-bay contamination.
+      // Amber quay-light contamination at the loading edge.
       volumeFx.pipeBeams.push(addVolumeBeam({
-        shape: 'cone', x: 18.2, y: 1.9, z: 1.6,
-        radius: 1.2, coreRadius: 0.5, height: 3.8,
-        hex: 0xff5f2e, coreHex: 0xffc39a,
+        shape: 'cone', x: 13.5, y: 1.9, z: -16.0,
+        radius: 1.25, coreRadius: 0.52, height: 3.8,
+        hex: 0xff8a3e, coreHex: 0xffc39a,
         opacity: 0.045, coreOpacity: 0.07, speed: 0.55, kind: 'pipe'
       }));
       volumeFx.pipeBeams.push(addVolumeBeam({
-        shape: 'cone', x: -18.2, y: 1.9, z: 8.2,
+        shape: 'cone', x: -20.8, y: 1.9, z: -21.0,
         radius: 1.05, coreRadius: 0.44, height: 3.8,
-        hex: 0xff5f2e, coreHex: 0xffc39a,
+        hex: 0xff8a3e, coreHex: 0xffc39a,
         opacity: 0.04, coreOpacity: 0.06, speed: 0.48, kind: 'pipe'
       }));
 
-      // Cold threshold curtain at the entry.
+      // Warm threshold curtain at the entry gate.
       volumeFx.entryBeam = addVolumeBeam({
-        shape: 'box', x: 0, y: 1.7, z: 10.12,
+        shape: 'box', x: 0, y: 1.7, z: 9.75,
         width: 9.6, height: 3.4, depth: 0.3,
-        hex: 0x8fe6ff, coreHex: 0xe8ffff,
+        hex: 0xff9a4a, coreHex: 0xffeed0,
         opacity: 0.03, coreOpacity: 0.045, speed: 1.1, kind: 'entry'
       });
 
-      // Central energy column.
+      // Cool fill column at the boss approach.
       volumeFx.coreBeam = addVolumeBeam({
-        shape: 'cylinder', x: 0, y: 2.2, z: -2.5,
+        shape: 'cylinder', x: 0, y: 2.2, z: -25.8,
         radius: 0.62, coreRadius: 0.24, height: 4.4,
         hex: 0x4fd8ff, coreHex: 0xd6fbff,
         opacity: 0.055, coreOpacity: 0.1, speed: 2.0, kind: 'core'
@@ -2613,7 +3789,7 @@
       // Boss pylon columns; colour is driven by the arena phase.
       for (i = -1; i <= 1; i += 2) {
         var pylonBeam = addVolumeBeam({
-          shape: 'cylinder', x: i * 18.85, y: 2.1, z: -10.8,
+          shape: 'cylinder', x: i * 19.1, y: 2.1, z: -25.6,
           radius: 0.56, coreRadius: 0.22, height: 4.2,
           hex: 0x3ec8dd, coreHex: 0xd9ffff,
           opacity: 0.06, coreOpacity: 0.1, speed: 2.6, kind: 'pylon'
@@ -2623,7 +3799,7 @@
 
       // A floor-anchored column that follows the active boss core horizontally.
       volumeFx.bossCore = addVolumeBeam({
-        shape: 'cylinder', x: 0, y: 2.1, z: -9,
+        shape: 'cylinder', x: 0, y: 2.1, z: -34,
         radius: 1.48, coreRadius: 0.56, height: 4.2,
         hex: 0xff4fb8, coreHex: 0xffe3f4,
         opacity: 0.045, coreOpacity: 0.08,
@@ -2633,13 +3809,13 @@
 
       // Exit portal volume plus a cone of spill into the arena.
       volumeFx.exitBeam = addVolumeBeam({
-        shape: 'box', x: 0, y: 1.52, z: -15.86,
+        shape: 'box', x: 0, y: 1.52, z: -45.0,
         width: 3.5, height: 2.85, depth: 0.18,
         hex: 0xff4d6d, coreHex: 0xffd9de,
         opacity: 0.05, coreOpacity: 0.09, speed: 1.8, kind: 'exit'
       });
       volumeFx.exitSpill = addVolumeBeam({
-        shape: 'cone', x: 0, y: 1.55, z: -14.6, rotationX: -Math.PI / 2,
+        shape: 'cone', x: 0, y: 1.55, z: -43.8, rotationX: -Math.PI / 2,
         radius: 1.5, coreRadius: 0.6, height: 2.6,
         hex: 0xff4d6d, coreHex: 0xffd9de,
         opacity: 0.032, coreOpacity: 0.055, speed: 1.6, kind: 'exit'
@@ -2768,9 +3944,9 @@
       }
 
       var exitHex = exit.unlocked ? C.green : C.red;
-      addReflectionStrip(-1.12, -14.0, 0, 0.16, 3.8, exitHex, 0.055 + pulse * 0.045);
-      addReflectionStrip(0, -13.7, 0, 0.2, 4.4, exitHex, 0.07 + pulse * 0.055);
-      addReflectionStrip(1.12, -14.0, 0, 0.16, 3.8, exitHex, 0.055 + pulse * 0.045);
+      addReflectionStrip(-1.12, -43.9, 0, 0.16, 3.8, exitHex, 0.055 + pulse * 0.045);
+      addReflectionStrip(0, -43.6, 0, 0.2, 4.4, exitHex, 0.07 + pulse * 0.055);
+      addReflectionStrip(1.12, -43.9, 0, 0.16, 3.8, exitHex, 0.055 + pulse * 0.045);
     }
 
     /* ------------------------------------------------------------ ambient */
@@ -2785,9 +3961,9 @@
           depthWrite: false
         }));
         m.position.set(
-          arand(-19, 19),
-          arand(0.5, 3.7),
-          arand(-15, 15)
+          arand(-22, 22),
+          arand(0.5, 6.8),
+          arand(-46, 19)
         );
         var s = arand(0.02, 0.065);
         m.scale.set(s, s, s);
@@ -2811,7 +3987,8 @@
     // released on kill/reset; nothing is constructed in the frame loop.
     var CONTACT_SHADOW_LIMIT = 12;
     var contactShadows = [];
-    // The sun sits at (-0.45, 1, 0.3), so ground shadows stretch toward +x/-z.
+    // The low sun sits at (-0.66, 0.4, 0.55), so ground shadows stretch
+    // toward +x/-z and read much longer than the old indoor rig.
     var shadowFlat = Math.sqrt(sun.position.x * sun.position.x + sun.position.z * sun.position.z) || 1;
     var SHADOW_DIR_X = -sun.position.x / shadowFlat;
     var SHADOW_DIR_Z = -sun.position.z / shadowFlat;
@@ -3116,8 +4293,12 @@
       rifleBoltZ: 0,
       rifleCell: null,
       rifleCellBase: null,
+      rifleMag: null,
+      rifleMagY: 0,
+      rifleMagZ: 0,
       scatterDrum: null,
       scatterGate: null,
+      scatterShells: [],
       bladeGroup: null,
       bladeCore: null,
       bladeCoreBase: null,
@@ -3234,6 +4415,15 @@
       var bolt = vmBox(rifle, gunLight, -0.073, 0.048, 0.018, 0.018, 0.022, 0.055, 951);
       vmBox(rifle, gunDeep, -0.075, 0.048, -0.035, 0.006, 0.012, 0.085, 951);
       vmBox(rifle, gunGlow, -0.07, 0.078, 0.035, 0.006, 0.012, 0.03, 951);
+      // Detachable box magazine: the whole group drops and tilts during the
+      // reload animation, then seats with a visible charge stage.
+      var mag = new THREE.Group();
+      mag.position.set(0, -0.055, -0.055);
+      rifle.add(mag);
+      vmBox(mag, gunDeep, 0, -0.12, 0, 0.078, 0.22, 0.105, 949);
+      vmBox(mag, gunMid, 0, -0.145, 0.058, 0.066, 0.16, 0.035, 949);
+      vmBox(mag, gunLight, 0, -0.21, 0.062, 0.052, 0.028, 0.02, 951);
+      vmBox(mag, gunGlow, 0, -0.075, 0.062, 0.018, 0.05, 0.012, 951);
       addGlove(rifle, 0, -0.14, 0.065, 0.16);
 
       rifle.visible = true;
@@ -3244,6 +4434,9 @@
       vmRefs.rifleBoltZ = bolt.position.z;
       vmRefs.rifleCell = cellGlow;
       vmRefs.rifleCellBase = { x: cellGlow.scale.x, y: cellGlow.scale.y, z: cellGlow.scale.z };
+      vmRefs.rifleMag = mag;
+      vmRefs.rifleMagY = mag.position.y;
+      vmRefs.rifleMagZ = mag.position.z;
     }
 
     function buildRiftScatter() {
@@ -3270,8 +4463,11 @@
       vmBox(gate, gunMid, 0, 0.14, 0.015, 0.15, 0.025, 0.13);
       vmBox(gate, gunDeep, 0, 0.153, -0.015, 0.11, 0.008, 0.08, 951);
       for (i = 0; i < 5; i++) {
-        vmBox(gate, gunPink, -0.056 + i * 0.028, 0.157, 0.02, 0.017, 0.01, 0.05, 951);
-        vmBox(gate, gunAmber, -0.056 + i * 0.028, 0.162, 0.045, 0.017, 0.006, 0.008, 951);
+        var shell = vmBox(gate, gunPink, -0.056 + i * 0.028, 0.157, 0.02,
+          0.017, 0.01, 0.05, 951);
+        vmBox(gate, gunAmber, -0.056 + i * 0.028, 0.162, 0.045,
+          0.017, 0.006, 0.008, 951);
+        vmRefs.scatterShells.push(shell);
       }
       vmCyl(scatter, gunDark, 0, 0.135, -0.055, 0.014, 0.15, 'x', 951);
 
@@ -3406,25 +4602,77 @@
     function updateViewmodel(dt) {
       var w = currentGun();
       var t = gameTime;
+      var rk = 0;
+      if (w.reloading > 0 && w.def.reloadTime) {
+        rk = Math.max(0, Math.min(1, 1 - w.reloading / w.def.reloadTime));
+      }
+      var rifle = weaponGroups[0];
+      var scatter = weaponGroups[1];
+      var blade = weaponGroups[2];
+
+      if (rifle) {
+        rifle.position.set(0, 0, 0);
+        rifle.rotation.set(0, 0, 0);
+        if (currentWeapon === 0 && rk > 0) {
+          var lower = Math.sin(Math.min(1, rk / 0.24) * Math.PI / 2);
+          if (rk > 0.78) lower *= Math.max(0, (1 - rk) / 0.22);
+          var tilt = Math.sin(rk * Math.PI);
+          rifle.position.set(-tilt * 0.03, -lower * 0.16, lower * 0.045);
+          rifle.rotation.set(tilt * 0.16, tilt * 0.1, tilt * 0.48);
+        }
+      }
 
       if (vmRefs.rifleBolt) {
-        vmRefs.rifleBolt.position.z = vmRefs.rifleBoltZ + player.recoil * 0.02;
+        var charge = rk > 0.74 ? Math.sin(Math.max(0, Math.min(1, (rk - 0.74) / 0.22)) * Math.PI) : 0;
+        vmRefs.rifleBolt.position.z = vmRefs.rifleBoltZ + player.recoil * 0.02 - charge * 0.03;
       }
       if (vmRefs.rifleCell) {
         vmRefs.rifleCell.scale.y =
           vmRefs.rifleCellBase.y * (0.92 + Math.sin(t * 7.5) * 0.08);
       }
+      if (vmRefs.rifleMag) {
+        var magOut = 0;
+        if (currentWeapon === 0 && rk > 0.2 && rk < 0.64) {
+          magOut = Math.sin((rk - 0.2) / 0.44 * Math.PI);
+        }
+        vmRefs.rifleMag.position.y = vmRefs.rifleMagY - magOut * 0.17;
+        vmRefs.rifleMag.position.z = vmRefs.rifleMagZ + magOut * 0.045;
+        vmRefs.rifleMag.rotation.x = magOut * 0.55;
+      }
+
+      if (scatter) {
+        scatter.position.set(0, 0, 0);
+        scatter.rotation.set(0, 0, 0);
+        if (currentWeapon === 1 && rk > 0) {
+          var sl = Math.sin(Math.min(1, rk / 0.25) * Math.PI / 2);
+          if (rk > 0.76) sl *= Math.max(0, (1 - rk) / 0.24);
+          var st = Math.sin(rk * Math.PI);
+          scatter.position.set(0, -sl * 0.15, sl * 0.04);
+          scatter.rotation.set(st * 0.24, 0, st * 0.4);
+        }
+      }
       if (vmRefs.scatterDrum) {
-        vmRefs.scatterDrum.rotation.x += dt * (w.reloading > 0 ? 15 : 0.5);
+        vmRefs.scatterDrum.rotation.x += dt * (w.reloading > 0 && currentWeapon === 1 ? 17 : 0.5);
       }
       if (vmRefs.scatterGate) {
-        var gateLift = 0;
-        if (w.reloading > 0 && w.def.reloadTime) {
-          var reloadK = 1 - w.reloading / w.def.reloadTime;
-          gateLift = Math.sin(Math.max(0, Math.min(1, reloadK)) * Math.PI) * 0.024;
+        var gateOpen = 0;
+        if (currentWeapon === 1 && rk > 0) {
+          gateOpen = Math.sin(Math.min(1, rk / 0.3) * Math.PI / 2);
+          if (rk > 0.7) gateOpen *= Math.max(0, (1 - rk) / 0.3);
         }
-        vmRefs.scatterGate.position.y = gateLift;
+        vmRefs.scatterGate.position.y = gateOpen * 0.1;
+        vmRefs.scatterGate.rotation.x = -gateOpen * 0.55;
       }
+      for (var si = 0; si < vmRefs.scatterShells.length; si++) {
+        var shell = vmRefs.scatterShells[si];
+        var shellPop = 0;
+        if (currentWeapon === 1 && rk > 0.3 && rk < 0.68) {
+          var sk = (rk - 0.3) / 0.38 * 5 - si;
+          shellPop = Math.max(0, Math.sin(Math.max(0, Math.min(1, sk)) * Math.PI)) * 0.022;
+        }
+        shell.position.y = 0.157 + shellPop;
+      }
+
       if (vmRefs.bladeCore) {
         var corePulse = 0.92 + Math.sin(t * 9.3) * 0.08;
         vmRefs.bladeCore.scale.set(
@@ -3441,12 +4689,20 @@
           vmRefs.bladeAuraBase.z
         );
       }
-      if (vmRefs.bladeGroup) {
-        var swing = currentWeapon === 2 ? player.recoil : 0;
-        vmRefs.bladeGroup.rotation.x = 0.26;
-        vmRefs.bladeGroup.rotation.z = -swing * 0.18;
-        vmRefs.bladeGroup.rotation.y = swing * 0.38;
-        vmRefs.bladeGroup.position.x = -swing * 0.02;
+      if (blade) {
+        if (player.slashT > 0 && currentWeapon === 2) {
+          var dur = WEAPON_DEFS[2].slashTime;
+          var k = 1 - player.slashT / dur;
+          var wind = Math.min(1, k / 0.28);
+          var sweep = k < 0.28 ? 0 : Math.sin((k - 0.28) / 0.72 * Math.PI);
+          blade.rotation.x = 0.26 + (1 - sweep) * wind * 0.52 - sweep * 0.18;
+          blade.rotation.y = -0.72 + sweep * 1.62;
+          blade.rotation.z = -0.26 + sweep * 1.18;
+          blade.position.set(-sweep * 0.12, sweep * 0.05, -sweep * 0.12);
+        } else {
+          blade.rotation.set(0.26, 0, 0);
+          blade.position.set(0, 0, 0);
+        }
       }
     }
 
@@ -3468,25 +4724,33 @@
       shake: 0,
       bob: 0,
       recoil: 0,
-      flashT: 0
+      flashT: 0,
+      velocityY: 0,
+      grounded: true,
+      airDashUsed: false,
+      slashT: 0,
+      slashHitDone: false,
+      slashId: 0,
+      supplyBlock: 0
     };
 
     var WEAPON_DEFS = [
       {
         id: 'rifle', slot: '01', name: '脉冲步枪', en: 'PULSE RIFLE',
         auto: true, magSize: 30, reserveMax: 120,
-        dmg: 20, interval: 0.105, reloadTime: 1.1,
+        dmg: 20, interval: 0.105, reloadTime: 1.25,
         spread: 0.014, pellets: 1, range: 55, color: C.cyan
       },
       {
         id: 'scatter', slot: '02', name: '裂能散射器', en: 'RIFT SCATTER',
         auto: false, magSize: 8, reserveMax: 48,
-        dmg: 12, interval: 0.62, reloadTime: 1.35,
+        dmg: 12, interval: 0.62, reloadTime: 1.1,
         spread: 0.075, pellets: 5, range: 32, color: C.magenta
       },
       {
         id: 'blade', slot: '03', name: '相位刃', en: 'PHASE BLADE',
-        melee: true, interval: 0.42, range: 3.0, arc: 0.58, dmg: 56, color: C.violet
+        melee: true, interval: 0.48, range: 3.0, arc: 0.58, dmg: 56, color: C.violet,
+        slashTime: 0.4, slashHitStart: 0.1, slashHitEnd: 0.23
       }
     ];
 
@@ -3501,6 +4765,32 @@
     });
 
     var currentWeapon = 0;
+
+    // Exactly two fixed supply points: one at the entrance, one at the repair
+    // area before the boss dock.  Each owns an independent 35 s cooldown.
+    var SUPPLY_COOLDOWN = 35;
+    var SUPPLY_TIME = 0.9;
+    var SUPPLY_RANGE = 2.9;
+    var supplyStations = [
+      {
+        id: 'entry', name: '入口补给点', x: -9.2, z: 16.3, baseY: 0,
+        cooldown: 0, group: null, lampMat: null, ringMat: null,
+        ring: null, core: null, lamp: null
+      },
+      {
+        id: 'repair', name: '维修区补给点', x: 14.0, z: -16.0, baseY: 0.62,
+        cooldown: 0, group: null, lampMat: null, ringMat: null,
+        ring: null, core: null, lamp: null
+      }
+    ];
+    var supply = {
+      near: null,
+      active: false,
+      station: null,
+      progress: 0,
+      startX: 0,
+      startZ: 0
+    };
 
     var input = {
       keys: Object.create(null),
@@ -3520,6 +4810,14 @@
     var lastTs = 0;
 
     var enemies = [];
+    // Combat entities are built once during boot.  Spawn/kill/recycle paths only
+    // toggle visibility and reset state, so update-time combat never allocates
+    // Mesh/Material/Geometry.
+    var SENTINEL_POOL_SIZE = 8;
+    var TURRET_POOL_SIZE = 4;
+    var sentinelPool = [];
+    var turretPool = [];
+    var bossPool = null;
     var bullets = [];
     var deflects = [];
     var missiles = [];
@@ -3602,10 +4900,16 @@
 
     /* ----------------------------------------------------------- collisions */
 
-    function resolveCircle(pos, radius) {
+    function resolveCircle(pos, radius, feetY) {
+      var feet = feetY === undefined ? 0 : feetY;
       for (var pass = 0; pass < 2; pass++) {
         for (var i = 0; i < colliders.length; i++) {
           var c = colliders[i];
+          // Low surfaces can be stepped onto; anything whose top is already
+          // below the boots no longer blocks horizontal movement.
+          if (c.y1 <= feet + STEP_HEIGHT + 0.02) continue;
+          // Overhead structures (crane girders) never block the body.
+          if (c.y0 >= feet + PLAYER_HEIGHT) continue;
           var cx = clamp(pos.x, c.minX, c.maxX);
           var cz = clamp(pos.z, c.minZ, c.maxZ);
           var dx = pos.x - cx;
@@ -3641,9 +4945,92 @@
       for (var i = 0; i < steps; i++) {
         player.pos.x += dx / steps;
         player.pos.z += dz / steps;
-        resolveCircle(player.pos, player.radius);
+        resolveCircle(player.pos, player.radius, player.pos.y - EYE);
       }
-      player.pos.y = EYE;
+    }
+
+    function insideStandable(s, x, z, pad) {
+      var p = pad || 0;
+      return x >= s.minX - p && x <= s.maxX + p && z >= s.minZ - p && z <= s.maxZ + p;
+    }
+
+    // Highest whitelisted top within [minTop, maxTop] under the player's
+    // centre.  Ground plane 0 is always implicit.
+    function standableTopAt(x, z, minTop, maxTop) {
+      var best = null;
+      if (minTop <= 0 && maxTop >= 0) best = 0;
+      for (var i = 0; i < standables.length; i++) {
+        var s = standables[i];
+        if (s.top < minTop - 0.02 || s.top > maxTop + 0.02) continue;
+        if (!insideStandable(s, x, z, 0.12)) continue;
+        if (best === null || s.top > best) best = s.top;
+      }
+      return best;
+    }
+
+    function landingTopAt(x, z, oldFeet, nextFeet) {
+      var best = null;
+      for (var i = 0; i < standables.length; i++) {
+        var s = standables[i];
+        if (s.top > oldFeet + 0.04 || s.top < nextFeet - 0.04) continue;
+        if (!insideStandable(s, x, z, 0.12)) continue;
+        if (best === null || s.top > best) best = s.top;
+      }
+      if (oldFeet >= -0.02 && nextFeet <= 0) {
+        if (best === null || best < 0) best = 0;
+      }
+      return best;
+    }
+
+    function updateVertical(dt) {
+      var feet = player.pos.y - EYE;
+      if (player.grounded) {
+        // Walking (or stepping) onto a whitelisted low top snaps up by one
+        // step.  Larger ledges still require Space.
+        var stepTop = standableTopAt(player.pos.x, player.pos.z,
+          feet - 0.16, feet + STEP_HEIGHT);
+        if (stepTop !== null && stepTop >= feet - 0.16) {
+          feet = stepTop;
+          player.velocityY = 0;
+          player.airDashUsed = false;
+        } else {
+          player.grounded = false;
+        }
+      }
+
+      if (!player.grounded) {
+        player.velocityY -= GRAVITY * dt;
+        var nextFeet = feet + player.velocityY * dt;
+        var landed = null;
+        if (player.velocityY <= 0) {
+          landed = landingTopAt(player.pos.x, player.pos.z, feet, nextFeet);
+        }
+        if (landed !== null) {
+          feet = landed;
+          player.velocityY = 0;
+          player.grounded = true;
+          player.airDashUsed = false;
+        } else {
+          feet = nextFeet;
+          if (feet < -2.5) {
+            // Safety net only; the dock bounds prevent normal falls.
+            feet = 0;
+            player.velocityY = 0;
+            player.grounded = true;
+          }
+        }
+      }
+      player.pos.y = feet + EYE;
+    }
+
+    function tryJump() {
+      if (mode !== 'playing' || !player.grounded) return;
+      player.grounded = false;
+      player.velocityY = JUMP_SPEED;
+      player.airDashUsed = false;
+      player.shake = Math.max(player.shake, 0.08);
+      spawnParticles(new THREE.Vector3(player.pos.x, player.pos.y - EYE + 0.05, player.pos.z),
+        0xd8c8b0, 4, 1.4, 0.2, 0.03);
     }
 
     function rayBox(ox, oy, oz, dx, dy, dz, box) {
@@ -3897,6 +5284,66 @@
       var p = power || 1;
       spawnSparks(point, color, 2 + Math.floor(p * 3), 2.6 + p * 2.2, p);
       if (p > 0.9) spawnRingFx(point, 0.55 + p * 0.45, color, 0.2 + p * 0.05, point.y);
+    }
+
+    /* ------------------------------------------------------- blade slash FX */
+    // Six prebuilt arc meshes.  The blade animation only retunes transforms
+    // and material opacity; no Mesh/Material is constructed during combat.
+    var SLASH_FX_LIMIT = 6;
+    var slashFxPool = [];
+
+    function buildSlashPool() {
+      for (var i = 0; i < SLASH_FX_LIMIT; i++) {
+        var mat = fxAdditive(0xc9a2ff, 0.9);
+        var mesh = new THREE.Mesh(G.slashArc, mat);
+        mesh.visible = false;
+        mesh.renderOrder = 9;
+        scene.add(mesh);
+        slashFxPool.push({
+          mesh: mesh, mat: mat, alive: false,
+          ttl: 0, max: 0.3, yaw: 0
+        });
+      }
+    }
+
+    function spawnSlashArc() {
+      var slot = null;
+      for (var i = 0; i < slashFxPool.length; i++) {
+        if (!slashFxPool[i].alive) { slot = slashFxPool[i]; break; }
+      }
+      if (!slot) return;
+      slot.alive = true;
+      slot.ttl = slot.max = 0.38;
+      slot.yaw = player.yaw;
+      slot.mat.opacity = 0.9;
+      slot.mesh.visible = true;
+      var fwd = flatForward(new THREE.Vector3());
+      slot.mesh.position.set(
+        player.pos.x + fwd.x * 1.75,
+        player.pos.y - 0.24,
+        player.pos.z + fwd.z * 1.75
+      );
+      // Keep the arc plane facing the player so the swing reads in first person.
+      slot.mesh.rotation.set(Math.PI / 2, slot.yaw + Math.PI, -0.15);
+      slot.mesh.scale.set(1.0, 1.0, 1.0);
+    }
+
+    function updateSlashFx(dt) {
+      for (var i = 0; i < slashFxPool.length; i++) {
+        var s = slashFxPool[i];
+        if (!s.alive) continue;
+        s.ttl -= dt;
+        if (s.ttl <= 0) {
+          s.alive = false;
+          s.mesh.visible = false;
+          continue;
+        }
+        var k = 1 - s.ttl / s.max;
+        s.mat.opacity = 0.82 * (1 - k);
+        var r = 1.0 + k * 0.65;
+        s.mesh.scale.set(r, 1, r);
+        s.mesh.rotation.z = -0.15 - k * 0.95;
+      }
     }
 
     /* --------------------------------------------------------------- rings */
@@ -4463,21 +5910,25 @@
 
     function fireWeapon() {
       if (mode !== 'playing') return;
+      if (supply.active || player.supplyBlock > 0) return;
       var w = currentGun();
       var d = w.def;
       if (w.reloading > 0 || w.cool > 0) return;
+      if (player.slashT > 0) return;
 
       if (!d.melee && w.mag <= 0) {
         w.cool = 0.2;
-        if (gameTime - lastDryToast > 1.4) {
+        if (w.reserve > 0) {
+          startReload();
+        } else if (gameTime - lastDryToast > 1.4) {
           lastDryToast = gameTime;
-          addToast('弹匣已空 // 按 R 换弹', 'warn');
+          addToast('弹匣与备弹已空 // 寻找补给点', 'warn');
         }
         return;
       }
 
       if (d.melee) {
-        meleeStrike();
+        startBladeSwing();
         w.cool = d.interval;
         player.recoil = Math.max(player.recoil, 0.75);
         return;
@@ -4510,20 +5961,39 @@
       spawnSparks(tracerFrom, d.color, 3, 2.8, 0.9);
     }
 
-    function meleeStrike() {
-      var def = currentGun().def;
+    function startBladeSwing() {
+      var def = WEAPON_DEFS[2];
+      if (player.slashT > 0) return;
+      player.slashT = def.slashTime;
+      player.slashHitDone = false;
+      player.slashId++;
+      player.shake = Math.max(player.shake, 0.18);
+      spawnSlashArc();
+      var fwd = flatForward(new THREE.Vector3());
+      var slashPos = player.pos.clone().addScaledVector(fwd, 1.5);
+      slashPos.y = player.pos.y - 0.5;
+      spawnRingFx(slashPos, 2.4, C.violet, 0.24, slashPos.y);
+    }
+
+    // Runs every frame inside the short hit window.  A per-swing id stamps each
+    // target, so a target can only take damage once per swing even if it stays
+    // in the arc for multiple frames.
+    function resolveBladeHit() {
+      var def = WEAPON_DEFS[2];
       var fwd = flatForward(new THREE.Vector3());
       var origin = player.pos.clone();
       var hitAnything = false;
+      var swingId = player.slashId;
 
       for (var i = enemies.length - 1; i >= 0; i--) {
         var e = enemies[i];
-        if (e.dead) continue;
+        if (e.dead || e.slashMark === swingId) continue;
         var to = new THREE.Vector3(e.pos.x - origin.x, 0, e.pos.z - origin.z);
         var dist = to.length();
         if (dist < def.range + e.radius && dist > 0.001) {
           to.multiplyScalar(1 / dist);
           if (to.dot(fwd) > def.arc) {
+            e.slashMark = swingId;
             damageEnemy(e, def.dmg, C.violet, e.pos);
             e.knock.addScaledVector(fwd, 9);
             hitAnything = true;
@@ -4531,12 +6001,13 @@
         }
       }
 
-      if (boss && boss.alive) {
+      if (boss && boss.alive && boss.slashMark !== swingId) {
         var bto = new THREE.Vector3(boss.pos.x - origin.x, 0, boss.pos.z - origin.z);
         var bdist = bto.length();
         if (bdist < 4.2 && bdist > 0.001) {
           bto.multiplyScalar(1 / bdist);
           if (bto.dot(fwd) > 0.3) {
+            boss.slashMark = swingId;
             damageBoss(42, C.violet, boss.pos);
             hitAnything = true;
           }
@@ -4545,13 +6016,15 @@
 
       for (var mi = missiles.length - 1; mi >= 0; mi--) {
         var m = missiles[mi];
+        if (m.slashMark === swingId) continue;
         if (m.pos.distanceTo(origin) < 3.6) {
+          m.slashMark = swingId;
           killMissileAt(mi);
           hitAnything = true;
         }
       }
 
-      // Clear / deflect nearby hostile projectiles.
+      // Clear / deflect nearby hostile projectiles once per frame.
       var deflected = 0;
       for (var bi = bullets.length - 1; bi >= 0; bi--) {
         var b = bullets[bi];
@@ -4571,17 +6044,29 @@
         }
       }
 
-      var slashPos = origin.clone().addScaledVector(fwd, 1.5);
-      slashPos.y = 1.25;
-      spawnRingFx(slashPos, 2.4, C.violet, 0.24, 1.2);
-      spawnParticles(slashPos, C.violet, 8, 5, 0.25, 0.04);
+      if (hitAnything) {
+        var hitPos = origin.clone().addScaledVector(fwd, 1.5);
+        hitPos.y = player.pos.y - 0.5;
+        spawnParticles(hitPos, C.violet, 6, 5, 0.25, 0.04);
+        registerHit(false);
+      }
+    }
 
-      if (hitAnything) registerHit(false);
-      player.shake = Math.max(player.shake, 0.2);
+    function updateBladeSwing(dt) {
+      if (player.slashT <= 0) return;
+      var def = WEAPON_DEFS[2];
+      player.slashT = Math.max(0, player.slashT - dt);
+      var elapsed = def.slashTime - player.slashT;
+      if (elapsed >= def.slashHitStart && elapsed <= def.slashHitEnd && !player.slashHitDone) {
+        resolveBladeHit();
+      }
+      if (elapsed >= def.slashHitEnd) player.slashHitDone = true;
+      if (player.slashT <= 0) player.slashHitDone = false;
     }
 
     function startReload() {
       if (mode !== 'playing') return;
+      if (supply.active) return;
       var w = currentGun();
       var d = w.def;
       if (d.melee || w.reloading > 0 || w.mag >= d.magSize || w.reserve <= 0) return;
@@ -4592,6 +6077,8 @@
       if (mode !== 'playing') return;
       if (index < 0 || index >= weapons.length || index === currentWeapon) return;
       weapons[currentWeapon].reloading = 0;
+      player.slashT = 0;
+      player.slashHitDone = false;
       currentWeapon = index;
       muzzleT = 0;
       muzzleFlash.visible = false;
@@ -4604,6 +6091,8 @@
       var w = currentGun();
       if (w.cool > 0) w.cool = Math.max(0, w.cool - dt);
 
+      updateBladeSwing(dt);
+
       if (w.reloading > 0) {
         w.reloading -= dt;
         if (w.reloading <= 0) {
@@ -4613,6 +6102,12 @@
           w.mag += take;
           w.reserve -= take;
         }
+      }
+
+      // Auto-reload an empty ranged weapon when reserve remains.
+      if (!w.def.melee && w.mag <= 0 && w.reserve > 0 &&
+        w.reloading <= 0 && mode === 'playing' && !supply.active) {
+        startReload();
       }
 
       if (input.fireHeld) {
@@ -4638,6 +6133,7 @@
 
     function tryDash() {
       if (mode !== 'playing' || player.dashCd > 0) return;
+      if (!player.grounded && player.airDashUsed) return;
       var f = (input.keys.KeyW ? 1 : 0) - (input.keys.KeyS ? 1 : 0);
       var s = (input.keys.KeyD ? 1 : 0) - (input.keys.KeyA ? 1 : 0);
       var dir = new THREE.Vector3();
@@ -4648,6 +6144,7 @@
       } else {
         flatForward(dir);
       }
+      if (!player.grounded) player.airDashUsed = true;
       player.dashT = 0.16;
       player.dashCd = 3.0;
       player.invuln = Math.max(player.invuln, 0.36);
@@ -4659,6 +6156,7 @@
 
     function tryPulse() {
       if (mode !== 'playing' || player.pulseCd > 0) return;
+      if (supply.active || player.supplyBlock > 0) return;
       player.pulseCd = 8.0;
       spawnRingFx(player.pos, 6.2, C.cyan, 0.55, 0.9);
       spawnRingFx(player.pos, 4.4, C.magenta, 0.42, 1.35);
@@ -4730,6 +6228,8 @@
         movePlayer(mv.x * dt, mv.z * dt);
       }
 
+      updateVertical(dt);
+
       player.bob += dt * (moving ? (sprint ? 12 : 8.5) : 2.2);
       var bobY = Math.sin(player.bob) * (moving ? 0.045 : 0.008);
       var bobX = Math.cos(player.bob * 0.5) * (moving ? 0.018 : 0.004);
@@ -4738,7 +6238,7 @@
       var shx = (Math.random() * 2 - 1) * player.shake * 0.055;
       var shy = (Math.random() * 2 - 1) * player.shake * 0.055;
 
-      camera.position.set(player.pos.x + bobX * 0.3 + shx, EYE + bobY + shy, player.pos.z);
+      camera.position.set(player.pos.x + bobX * 0.3 + shx, player.pos.y + bobY + shy, player.pos.z);
       tmpEuler.set(player.pitch, player.yaw, 0, 'YXZ');
       camera.quaternion.setFromEuler(tmpEuler);
 
@@ -4841,7 +6341,7 @@
           spawnParticles(b.pos, b.color, 1, 0.5, 0.2, 0.028);
         }
 
-        if (b.pos.y < 0.05 || b.pos.y > 4.4 ||
+        if (b.pos.y < 0.05 || b.pos.y > 10.5 ||
           b.pos.x < ARENA.minX || b.pos.x > ARENA.maxX ||
           b.pos.z < ARENA.minZ || b.pos.z > ARENA.maxZ) {
           removeBulletAt(i);
@@ -5109,9 +6609,11 @@
       };
     }
 
-    function spawnSentinel(x, z) {
-      var built = buildSentinelMesh();
-      var e = {
+    function makeSentinelEntity(built) {
+      built.group.visible = false;
+      scene.add(built.group);
+      return {
+        active: false,
         type: 'sentinel',
         group: built.group,
         coreMat: built.coreMat,
@@ -5121,30 +6623,25 @@
         glow: built.glow,
         glowBase: built.glowBase,
         shadow: null,
-        pos: new THREE.Vector3(x, 1.55, z),
+        pos: new THREE.Vector3(),
         hp: 46,
         maxHp: 46,
         radius: 0.62,
         speed: 3.1,
-        fireCd: rnd(1.2, 2.4),
-        bobPhase: rnd(0, Math.PI * 2),
+        fireCd: 0,
+        bobPhase: 0,
         slow: 0,
         flash: 0,
         dead: false,
         knock: new THREE.Vector3()
       };
-      e.group.position.copy(e.pos);
-      scene.add(e.group);
-      e.shadow = acquireContactShadow(e, 1.08, 0.27);
-      enemies.push(e);
-      spawnRingFx(e.pos, 2.2, C.magenta, 0.45, 0.1);
-      spawnParticles(e.pos, C.magenta, 10, 5, 0.4, 0.05);
-      return e;
     }
 
-    function spawnTurret(x, z) {
-      var built = buildTurretMesh();
-      var e = {
+    function makeTurretEntity(built) {
+      built.group.visible = false;
+      scene.add(built.group);
+      return {
+        active: false,
         type: 'turret',
         group: built.group,
         head: built.head,
@@ -5155,12 +6652,12 @@
         aura: built.aura,
         auraBase: built.auraBase,
         shadow: null,
-        pos: new THREE.Vector3(x, 2.15, z),
+        pos: new THREE.Vector3(),
         hp: 80,
         maxHp: 80,
         radius: 0.8,
         speed: 0,
-        fireCd: rnd(1.2, 2.0),
+        fireCd: 0,
         burst: 0,
         burstT: 0,
         bobPhase: 0,
@@ -5169,8 +6666,86 @@
         dead: false,
         knock: new THREE.Vector3()
       };
+    }
+
+    function buildEnemyPools() {
+      var i;
+      for (i = 0; i < SENTINEL_POOL_SIZE; i++) {
+        sentinelPool.push(makeSentinelEntity(buildSentinelMesh()));
+      }
+      for (i = 0; i < TURRET_POOL_SIZE; i++) {
+        turretPool.push(makeTurretEntity(buildTurretMesh()));
+      }
+      buildBossPool();
+    }
+
+    function releaseEnemySlot(e) {
+      if (!e) return;
+      releaseContactShadow(e.shadow);
+      e.shadow = null;
+      e.dead = true;
+      e.active = false;
+      if (e.group) e.group.visible = false;
+    }
+
+    function spawnSentinel(x, z) {
+      var e = null;
+      for (var i = 0; i < sentinelPool.length; i++) {
+        if (!sentinelPool[i].active) { e = sentinelPool[i]; break; }
+      }
+      if (!e) return null;
+
+      e.active = true;
+      e.dead = false;
+      e.pos.set(x, 1.55, z);
+      e.hp = e.maxHp;
+      e.speed = 3.1;
+      e.fireCd = rnd(1.2, 2.4);
+      e.bobPhase = rnd(0, Math.PI * 2);
+      e.slow = 0;
+      e.flash = 0;
+      e.knock.set(0, 0, 0);
+      e.coreMat.color.setHex(C.magenta);
+      e.ringMat.color.setHex(C.cyanDim);
+      e.glowMat.color.setHex(C.magenta);
+      e.glowMat.opacity = 0.18;
+      e.glow.scale.set(e.glowBase.x, e.glowBase.y, e.glowBase.z);
+      e.ring.rotation.set(0.42, 0, 0);
+      e.group.rotation.set(0, 0, 0);
       e.group.position.copy(e.pos);
-      scene.add(e.group);
+      e.group.visible = true;
+      e.shadow = acquireContactShadow(e, 1.08, 0.27);
+      enemies.push(e);
+      spawnRingFx(e.pos, 2.2, C.magenta, 0.45, 0.1);
+      spawnParticles(e.pos, C.magenta, 10, 5, 0.4, 0.05);
+      return e;
+    }
+
+    function spawnTurret(x, z, y) {
+      var e = null;
+      for (var i = 0; i < turretPool.length; i++) {
+        if (!turretPool[i].active) { e = turretPool[i]; break; }
+      }
+      if (!e) return null;
+
+      e.active = true;
+      e.dead = false;
+      e.pos.set(x, y === undefined ? 2.15 : y, z);
+      e.hp = e.maxHp;
+      e.fireCd = rnd(1.2, 2.0);
+      e.burst = 0;
+      e.burstT = 0;
+      e.slow = 0;
+      e.flash = 0;
+      e.knock.set(0, 0, 0);
+      e.head.rotation.set(0, 0, 0);
+      e.coreMat.color.setHex(C.amber);
+      e.auraMat.color.setHex(C.amber);
+      e.auraMat.opacity = 0.14;
+      e.aura.scale.set(e.auraBase.x, e.auraBase.y, e.auraBase.z);
+      e.group.rotation.set(0, 0, 0);
+      e.group.position.copy(e.pos);
+      e.group.visible = true;
       e.shadow = acquireContactShadow(e, 1.22, 0.23);
       enemies.push(e);
       spawnRingFx(e.pos, 2.0, C.amber, 0.4, e.pos.y);
@@ -5190,10 +6765,9 @@
       if (!e || e.dead) return;
       e.dead = true;
       kills++;
-      releaseContactShadow(e.shadow);
       spawnParticles(e.pos, e.type === 'turret' ? C.amber : C.magenta, 22, 7.5, 0.55, 0.07);
       spawnRingFx(e.pos, 2.6, e.type === 'turret' ? C.amber : C.magenta, 0.45, Math.max(0.1, e.pos.y - 0.5));
-      if (e.group.parent) scene.remove(e.group);
+      releaseEnemySlot(e);
       var idx = enemies.indexOf(e);
       if (idx >= 0) enemies.splice(idx, 1);
       registerHit(true);
@@ -5202,9 +6776,15 @@
     }
 
     function clearEnemies() {
-      for (var i = 0; i < enemies.length; i++) {
-        releaseContactShadow(enemies[i].shadow);
-        if (enemies[i].group && enemies[i].group.parent) scene.remove(enemies[i].group);
+      var i;
+      for (i = 0; i < enemies.length; i++) {
+        releaseEnemySlot(enemies[i]);
+      }
+      for (i = 0; i < sentinelPool.length; i++) {
+        if (sentinelPool[i].active) releaseEnemySlot(sentinelPool[i]);
+      }
+      for (i = 0; i < turretPool.length; i++) {
+        if (turretPool[i].active) releaseEnemySlot(turretPool[i]);
       }
       enemies.length = 0;
     }
@@ -5288,7 +6868,11 @@
     function updateEnemies(dt) {
       for (var i = enemies.length - 1; i >= 0; i--) {
         var e = enemies[i];
-        if (e.dead) { enemies.splice(i, 1); continue; }
+        if (e.dead) {
+          releaseEnemySlot(e);
+          enemies.splice(i, 1);
+          continue;
+        }
 
         e.flash = Math.max(0, e.flash - dt);
         e.slow = Math.max(0, e.slow - dt);
@@ -5452,6 +7036,7 @@
         coreMat: coreMat,
         eyeMat: eyeMat,
         plates: plates,
+        plateMat: plateMat,
         ring: ring,
         ring2: ring2,
         aura: aura,
@@ -5469,19 +7054,19 @@
       };
     }
 
-    function spawnBoss() {
-      if (boss) return;
+    function buildBossPool() {
+      if (bossPool) return;
       var built = buildBossMesh();
-      var group = built.group;
-      group.position.set(0, 2.5, -9);
-      scene.add(group);
-
-      boss = {
-        group: group,
+      built.group.visible = false;
+      scene.add(built.group);
+      bossPool = {
+        active: false,
+        group: built.group,
         core: built.core,
         coreMat: built.coreMat,
         eyeMat: built.eyeMat,
         plates: built.plates,
+        plateMat: built.plateMat,
         ring: built.ring,
         ring2: built.ring2,
         aura: built.aura,
@@ -5499,11 +7084,12 @@
         shieldMat: built.shieldMat,
         ringMat: built.ringMat,
         ring2Mat: built.ring2Mat,
-        pos: new THREE.Vector3(0, 2.5, -9),
-        hp: 160,
-        maxHp: 160,
+        pos: new THREE.Vector3(0, 2.5, -34),
+        hp: 500,
+        maxHp: 500,
         phase: 1,
-        alive: true,
+        alive: false,
+        enraged: false,
         t: 0,
         invuln: 1.4,
         shield: 0,
@@ -5514,14 +7100,78 @@
         action: null,
         actionCd: 1.8,
         alt: 0,
-        anchor: new THREE.Vector3(0, 2.5, -9),
+        anchor: new THREE.Vector3(0, 2.5, -34),
         anchorT: 3.5,
         summonCd: 16,
         contactCd: 0,
         deadT: 0
       };
-      boss.shadow = acquireContactShadow(boss, 3.05, 0.32);
+    }
 
+    function spawnBoss() {
+      if (boss || !bossPool || bossPool.active) return;
+      var b = bossPool;
+      b.active = true;
+      b.alive = true;
+      b.enraged = false;
+      b.hp = b.maxHp;
+      b.phase = 1;
+      b.t = 0;
+      b.invuln = 1.4;
+      b.shield = 0;
+      b.shieldCd = 7.5;
+      b.exposed = 0;
+      b.plateOpen = 0;
+      b.flash = 0;
+      b.action = null;
+      b.actionCd = 1.8;
+      b.alt = 0;
+      b.anchorT = 3.5;
+      b.summonCd = 16;
+      b.contactCd = 0;
+      b.deadT = 0;
+      b.pos.set(0, 2.5, -34);
+      b.anchor.set(0, 2.5, -34);
+      b.group.position.copy(b.pos);
+      b.group.quaternion.identity();
+      b.group.visible = true;
+      b.core.scale.setScalar(0.92);
+      b.coreMat.color.setHex(0x2a0a1e);
+      b.coreMat.emissive.setHex(0xff3a9a);
+      b.eyeMat.color.setHex(0xffe3f4);
+      b.plateMat.color.setHex(0x1c2940);
+      b.plateMat.emissive.setHex(0x0b1424);
+      for (var p = 0; p < b.plates.length; p++) {
+        var plate = b.plates[p];
+        plate.mesh.position.set(Math.cos(plate.angle) * 1.15, 0, Math.sin(plate.angle) * 1.15);
+        plate.mesh.rotation.set(0, -plate.angle + Math.PI / 2, 0);
+      }
+      b.ring.rotation.set(0.42, 0, 0);
+      b.ring2.rotation.set(1.3, 0, 0.5);
+      b.ringMat.opacity = 0.9;
+      b.ringMat.color.setHex(0xff5fc8);
+      b.ring2Mat.opacity = 0.7;
+      b.ring2Mat.color.setHex(C.violet);
+      b.aura.scale.setScalar(1.62);
+      b.auraMat.color.setHex(0xff4fb8);
+      b.auraMat.opacity = 0.08;
+      b.auraCore.scale.setScalar(1.06);
+      b.auraCoreMat.color.setHex(0xff8fd6);
+      b.auraCoreMat.opacity = 0.16;
+      b.auraHex = 0;
+      b.floorGlow.position.set(0, -2.4, 0);
+      b.floorGlowMat.color.setHex(0xff4fb8);
+      b.floorGlowMat.opacity = 0.09;
+      b.floorCore.position.set(0, -2.39, 0);
+      b.floorCoreMat.color.setHex(0xff9ad8);
+      b.floorCoreMat.opacity = 0.13;
+      b.shieldGroup.visible = false;
+      b.shieldGroup.rotation.set(0, 0, 0);
+      b.shieldMat.color.setHex(C.cyan);
+      b.shieldMat.opacity = 0.1;
+      b.shadow = acquireContactShadow(b, 3.05, 0.32);
+
+      boss = b;
       bossEverSpawned = true;
       bossDefeated = false;
       flow.bossActive = true;
@@ -5544,10 +7194,10 @@
       spawnParticles(point || boss.pos, color || C.magenta, 4, 4, 0.3, 0.05);
 
       if (boss.hp <= 0) {
-        // Never let a single burst skip a phase: gate lethal damage at 1 HP
-        // until the boss has shown all three phases.
+        // A large burst may cross a phase boundary but can never skip one.
         if (boss.phase < 3) {
-          boss.hp = 1;
+          var threshold = boss.phase === 1 ? 330 : 150;
+          boss.hp = boss.hp <= 0 ? threshold : Math.min(boss.hp, threshold);
           enterBossPhase(boss.phase + 1);
           return;
         }
@@ -5555,8 +7205,8 @@
         return;
       }
 
-      var ratio = boss.hp / boss.maxHp;
-      var targetPhase = ratio > 0.66 ? 1 : (ratio > 0.33 ? 2 : 3);
+      // Explicit HP bands: 500-331 phase 1, 330-151 phase 2, <=150 enraged.
+      var targetPhase = boss.hp > 330 ? 1 : (boss.hp > 150 ? 2 : 3);
       // Advance one phase per hit so a high-damage burst cannot skip a phase.
       if (targetPhase > boss.phase) enterBossPhase(boss.phase + 1);
     }
@@ -5566,9 +7216,9 @@
       boss.phase = phase;
       boss.invuln = 1.35;
       boss.action = null;
-      boss.actionCd = 1.0;
+      boss.actionCd = phase === 3 ? 1.65 : 1.0;
       boss.shield = 0;
-      boss.shieldCd = 5.0;
+      boss.shieldCd = phase === 3 ? 6.0 : 5.0;
       boss.exposed = 0;
       setArenaPhase(phase);
       spawnRingFx(boss.pos, 9, C.magenta, 0.8, 1.4);
@@ -5576,12 +7226,31 @@
       spawnParticles(boss.pos, C.magenta, 40, 12, 0.9, 0.09);
       boss.flash = Math.max(boss.flash, 0.22);
       player.shake = Math.max(player.shake, 0.5);
-      flashScreen(phase === 3 ? 0xff3d32 : 0x9b6bff, true);
-      addToast('守门者进入第 ' + phase + ' 阶段', 'boss');
+      if (phase === 3 && !boss.enraged) {
+        boss.enraged = true;
+        boss.summonCd = 12;
+        if (boss.plateMat) {
+          boss.plateMat.color.setHex(0x160307);
+          boss.plateMat.emissive.setHex(0x3d0505);
+        }
+        flashScreen(0xff2d2d, true);
+        addToast('ENRAGED // 守门者核心过载', 'boss');
+        // One radial burst marks the transition, then never repeats.
+        var burstOrigin = new THREE.Vector3(boss.pos.x, 1.25, boss.pos.z);
+        for (var b = 0; b < 12; b++) {
+          var ang = b / 12 * Math.PI * 2;
+          spawnBullet(burstOrigin.clone(), new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang)),
+            9.5, 8, 0xff3d32, 0.22, 0);
+        }
+        spawnRingFx(boss.pos, 11, 0xff3d32, 0.7, 1.2);
+        player.shake = Math.max(player.shake, 0.7);
+        if (enemies.length < 3) summonSentinels(2);
+      }
       if (phase === 3) {
-        boss.summonCd = 15;
-        summonSentinels(2);
-        addToast('核心暴露协议 // 安全区收窄', 'warn');
+        addToast('核心暴露窗口缩短 // 安全区收窄', 'warn');
+      } else {
+        flashScreen(0x9b6bff, true);
+        addToast('守门者进入第 ' + phase + ' 阶段', 'boss');
       }
     }
 
@@ -5595,11 +7264,10 @@
 
       var pos = boss.pos.clone();
       releaseContactShadow(boss.shadow);
-      if (boss.group) {
-        disposeOwned(boss.group);
-        if (boss.group.parent) scene.remove(boss.group);
-      }
-      boss.group = null;
+      boss.shadow = null;
+      if (boss.group) boss.group.visible = false;
+      boss.active = false;
+      boss = null;
 
       spawnParticles(pos, C.magenta, 60, 14, 1.1, 0.1);
       spawnParticles(pos, C.cyan, 40, 10, 1.0, 0.08);
@@ -5627,7 +7295,6 @@
         telegraphs[ti].group.visible = false;
       }
       telegraphs.length = 0;
-      boss = null;
       bossDefeated = true;
       flow.bossActive = false;
 
@@ -5644,8 +7311,8 @@
       if (!boss) return;
       for (var i = 0; i < count; i++) {
         var ang = i * Math.PI + Math.random() * 0.6;
-        var x = clamp(boss.pos.x + Math.cos(ang) * rnd(4.5, 7), ARENA.minX + 2.5, ARENA.maxX - 2.5);
-        var z = clamp(boss.pos.z + Math.sin(ang) * rnd(4.5, 7), ARENA.minZ + 2.5, ARENA.maxZ - 2.5);
+        var x = clamp(boss.pos.x + Math.cos(ang) * rnd(4.5, 7), BOSS_ARENA.minX + 1.5, BOSS_ARENA.maxX - 1.5);
+        var z = clamp(boss.pos.z + Math.sin(ang) * rnd(4.5, 7), BOSS_ARENA.minZ + 1.5, BOSS_ARENA.maxZ - 1.5);
         spawnSentinel(x, z);
       }
       addToast('守门者召唤增援 // ' + count + ' 个漂移哨兵', 'warn');
@@ -5667,7 +7334,7 @@
         points: [],
         axis: Math.random() < 0.5 ? 'x' : 'z'
       };
-      boss.actionCd = boss.phase === 3 ? 1.85 : (boss.phase === 2 ? 2.35 : 2.8);
+      boss.actionCd = boss.phase === 3 ? 1.65 : (boss.phase === 2 ? 2.2 : 2.8);
     }
 
     function endBossAction() {
@@ -5691,12 +7358,19 @@
       a.t += dt;
 
       if (a.type === 'volley') {
-        if (a.step === 0 && a.t >= 0.5) {
+        if (a.step === 0) {
           a.step = 1;
+          if (boss.phase === 3) {
+            spawnTelegraph(player.pos.x, player.pos.z, 1.5, 0.5, C.red);
+          }
+        }
+        if (a.step === 1 && a.t >= 0.5) {
+          a.step = 2;
           var base = bossAimDir();
           var origin = boss.pos.clone().addScaledVector(base, 1.5);
+          var fan = boss.phase === 3 ? 0.24 : 0.14;
           for (var i = -1; i <= 1; i++) {
-            var d = rotateYDir(base, i * 0.14);
+            var d = rotateYDir(base, i * fan);
             spawnBullet(origin, d, boss.phase === 3 ? 14 : 12, 11, C.magenta, 0.24, boss.phase === 3 ? 0.7 : 0);
           }
           spawnParticles(origin, C.magenta, 8, 5, 0.3, 0.06);
@@ -5750,8 +7424,12 @@
           a.step = 1;
           var mbase = bossAimDir();
           var morigin = boss.pos.clone().addScaledVector(mbase, 1.4);
-          for (var m = -1; m <= 1; m++) {
-            spawnMissile(morigin, rotateYDir(mbase, m * 0.32), boss.phase === 3 ? 9.5 : 8.2, 1.9, 6, 14);
+          var count = boss.phase === 3 ? 3 : 2;
+          var ttl = boss.phase === 3 ? 4.2 : 5.0;
+          for (var m = 0; m < count; m++) {
+            var off = (m - (count - 1) / 2) * 0.3;
+            spawnMissile(morigin, rotateYDir(mbase, off),
+              boss.phase === 3 ? 9.5 : 8.2, 1.9, ttl, 14);
           }
           addToast('追踪弹发射 // 可被击落', 'warn');
         }
@@ -5765,22 +7443,34 @@
           var phase3 = boss.phase === 3;
           var gapHalf = phase3 ? 0.24 : 0.4;
           var baseAng = Math.random() * Math.PI * 2;
+          a.baseAng = baseAng;
           var gaps = [];
           for (var g = 0; g < 3; g++) gaps.push(baseAng + g * Math.PI * 2 / 3);
           spawnShockwave(boss.pos, gaps, gapHalf, phase3 ? 12 : 9.5);
           addToast('冲击波 // 站进缺口', 'danger');
         }
-        if (a.t >= 1.2) endBossAction();
+        if (a.step === 1 && boss.phase === 3 && a.t >= 0.7) {
+          a.step = 2;
+          // Offset second ring: a different gap alignment and slower speed,
+          // so the two waves leave a readable moving safe lane.
+          var gaps2 = [];
+          for (var g2 = 0; g2 < 3; g2++) {
+            gaps2.push(a.baseAng + 0.45 + g2 * Math.PI * 2 / 3);
+          }
+          spawnShockwave(boss.pos, gaps2, 0.26, 8.4);
+          spawnRingFx(boss.pos, 4.2, C.red, 0.4, 1.1);
+        }
+        if (a.t >= (boss.phase === 3 ? 1.55 : 1.2)) endBossAction();
         return;
       }
 
       if (a.type === 'expose') {
         if (a.step === 0) {
           a.step = 1;
-          boss.exposed = 2.0;
-          addToast('核心暴露 // 伤害翻倍 2.0s', 'good');
+          boss.exposed = boss.phase === 3 ? 1.35 : 1.7;
+          addToast('核心暴露 // 伤害翻倍 ' + boss.exposed.toFixed(2) + 's', 'good');
         }
-        if (a.t >= 2.2) endBossAction();
+        if (a.t >= (boss.phase === 3 ? 1.55 : 1.95)) endBossAction();
         return;
       }
 
@@ -5813,14 +7503,17 @@
 
       boss.anchorT -= dt;
       if (boss.anchorT <= 0) {
-        boss.anchorT = boss.phase === 3 ? 2.2 : 3.4;
-        var anchors = [[0, -9], [-13, -2], [13, 2], [0, 8], [-13, 10], [13, -10]];
+        boss.anchorT = boss.phase === 3 ? 1.85 : (boss.phase === 2 ? 2.9 : 3.4);
+        var anchors = [
+          [0, -34], [-13, -28.5], [13, -28.5],
+          [-13.5, -39.5], [13.5, -39.5], [0, -26.5]
+        ];
         var pick = anchors[Math.floor(Math.random() * anchors.length)];
         boss.anchor.set(pick[0], 2.5, pick[1]);
         spawnParticles(boss.pos, C.violet, 8, 4, 0.35, 0.05);
       }
 
-      var mk = 1 - Math.exp(-dt * 1.3);
+      var mk = 1 - Math.exp(-dt * (boss.phase === 3 ? 1.55 : 1.3));
       boss.pos.x = lerp(boss.pos.x, boss.anchor.x, mk);
       boss.pos.z = lerp(boss.pos.z, boss.anchor.z, mk);
       boss.pos.y = 2.5 + Math.sin(boss.t * 1.4) * 0.16;
@@ -5831,7 +7524,7 @@
       boss.group.position.copy(boss.pos);
 
       if (boss.flash > 0) boss.coreMat.emissive.setHex(0xffffff);
-      else boss.coreMat.emissive.setHex(0xff3a9a);
+      else boss.coreMat.emissive.setHex(boss.enraged ? 0xff1a0a : 0xff3a9a);
 
       boss.eyeMat.color.setHex(boss.exposed > 0 ? C.amber : 0xffe3f4);
       var coreScale = 0.92 + Math.sin(boss.t * 3.2) * 0.03 + (boss.exposed > 0 ? 0.16 : 0);
@@ -5878,6 +7571,7 @@
       boss.shieldGroup.visible = boss.shield > 0;
       if (boss.shield > 0) {
         boss.shieldGroup.rotation.y += dt * 1.2;
+        boss.shieldMat.color.setHex(boss.enraged ? 0xff3d32 : C.cyan);
         boss.shieldMat.opacity = 0.1 + 0.05 * (0.5 + 0.5 * Math.sin(boss.t * 8));
       }
 
@@ -6020,7 +7714,7 @@
         if (!laserFxPool[i].running) { slot = laserFxPool[i]; break; }
       }
       if (!slot) return;
-      var len = axis === 'x' ? 42 : 34;
+      var len = axis === 'x' ? 46 : 67;
       slot.running = true;
       slot.axis = axis;
       slot.coord = coord;
@@ -6031,7 +7725,11 @@
       slot.sparkT = 0;
       slot.phase = boss && boss.phase ? boss.phase : 2;
       slot.group.visible = true;
-      slot.group.position.set(axis === 'x' ? 0 : coord, 1.45, axis === 'x' ? coord : 0);
+      slot.group.position.set(
+        axis === 'x' ? 0 : coord,
+        1.45,
+        axis === 'x' ? coord : (ARENA.minZ + ARENA.maxZ) * 0.5
+      );
       slot.group.rotation.y = axis === 'x' ? 0 : Math.PI / 2;
 
       var p = slot.parts;
@@ -6307,14 +8005,28 @@
       }, ms || 1700);
     }
 
+    function zoneLabelAt(z) {
+      if (z > ZONE.entrance.minZ) return ZONE.entrance.label;
+      if (z > ZONE.containers.minZ) return ZONE.containers.label;
+      if (z > ZONE.loading.minZ) return ZONE.loading.label;
+      if (z > ZONE.boss.minZ) return ZONE.boss.label;
+      return ZONE.extraction.label;
+    }
+
+    function updateZoneTag() {
+      if (!ui.sectorTag) return;
+      setText(ui.sectorTag, 'SUNSET DOCKYARD // ' + zoneLabelAt(player.pos.z));
+    }
+
     function updateObjective() {
-      var text = '目标 // 等待突入';
-      if (bossDefeated) text = '目标 // 抵达出口并按 E 撤离';
-      else if (boss && boss.alive) text = '目标 // 击败零号守门者';
-      else if (flow.wave === 1) text = '目标 // 清除第一波漂移哨兵';
-      else if (flow.wave === 2) text = '目标 // 摧毁第二波封锁单位';
-      else if (flow.bossActive) text = '目标 // 检测到高能信号';
+      var text = '目标 // 穿过入口堆场';
+      if (bossDefeated) text = '目标 // 前往码头尽头，在出口按 E 撤离';
+      else if (boss && boss.alive) text = '目标 // 开放船坞 // 击败零号守门者';
+      else if (flow.wave === 1) text = '目标 // 集装箱区 // 清除第一波封锁';
+      else if (flow.wave === 2) text = '目标 // 装卸平台 // 摧毁第二波封锁';
+      else if (flow.bossActive) text = '目标 // 进入开放 Boss 船坞';
       setText(ui.objective, text);
+      updateZoneTag();
     }
 
     function queueSpawn(delay, fn) {
@@ -6339,22 +8051,22 @@
 
       if (n === 1) {
         setText(ui.waveLabel, 'WAVE 01');
-        showBanner('WAVE 01 // 漂移哨兵', 1900);
-        addToast('第一波 // 4 个漂移哨兵', 'danger');
-        queueSpawn(0.5, function () { spawnSentinel(-16, -13); });
-        queueSpawn(0.8, function () { spawnSentinel(16, -13); });
-        queueSpawn(1.1, function () { spawnSentinel(-16, 12); });
-        queueSpawn(1.4, function () { spawnSentinel(16, 12); });
+        showBanner('WAVE 01 // 集装箱区失守', 1900);
+        addToast('第一波 // 4 个漂移哨兵进入堆场', 'danger');
+        queueSpawn(0.5, function () { spawnSentinel(-10, 6); });
+        queueSpawn(0.8, function () { spawnSentinel(10, 6); });
+        queueSpawn(1.1, function () { spawnSentinel(-10, -2); });
+        queueSpawn(1.4, function () { spawnSentinel(10, -2); });
       } else if (n === 2) {
         setText(ui.waveLabel, 'WAVE 02');
-        showBanner('WAVE 02 // 墙面炮台已上线', 1900);
-        addToast('第二波 // 4 哨兵 + 2 墙面炮台', 'danger');
-        queueSpawn(0.4, function () { spawnSentinel(-17, -3); });
-        queueSpawn(0.65, function () { spawnSentinel(17, 3); });
-        queueSpawn(0.9, function () { spawnSentinel(-17, 12); });
-        queueSpawn(1.15, function () { spawnSentinel(17, -12); });
-        queueSpawn(1.5, function () { spawnTurret(-20.3, -7); });
-        queueSpawn(1.8, function () { spawnTurret(20.3, 7); });
+        showBanner('WAVE 02 // 装卸平台交火', 1900);
+        addToast('第二波 // 4 哨兵 + 2 固定炮台', 'danger');
+        queueSpawn(0.4, function () { spawnSentinel(-12, -12); });
+        queueSpawn(0.65, function () { spawnSentinel(-4, -18); });
+        queueSpawn(0.9, function () { spawnSentinel(3, -12); });
+        queueSpawn(1.15, function () { spawnSentinel(2, -20); });
+        queueSpawn(1.5, function () { spawnTurret(-19.5, -18.5, 1.95); });
+        queueSpawn(1.8, function () { spawnTurret(19.5, -8.5, 1.95); });
       }
       updateObjective();
       updateHud();
@@ -6396,10 +8108,7 @@
 
     function clearSceneEntities() {
       var i;
-      for (i = 0; i < enemies.length; i++) {
-        if (enemies[i].group && enemies[i].group.parent) scene.remove(enemies[i].group);
-      }
-      enemies.length = 0;
+      clearEnemies();
       clearBullets();
 
       for (i = 0; i < deflects.length; i++) {
@@ -6475,13 +8184,20 @@
         ringFxPool[i].alive = false;
         ringFxPool[i].mesh.visible = false;
       }
+      for (i = 0; i < slashFxPool.length; i++) {
+        slashFxPool[i].alive = false;
+        slashFxPool[i].mesh.visible = false;
+      }
       resetReflectionStrips();
       pending.length = 0;
 
-      if (boss && boss.group) {
-        disposeOwned(boss.group);
-        if (boss.group.parent) scene.remove(boss.group);
-        releaseContactShadow(boss.shadow);
+      if (boss || (bossPool && bossPool.active)) {
+        var activeBoss = boss || bossPool;
+        releaseContactShadow(activeBoss.shadow);
+        activeBoss.shadow = null;
+        if (activeBoss.group) activeBoss.group.visible = false;
+        activeBoss.active = false;
+        activeBoss.alive = false;
       }
       releaseAllContactShadows();
       boss = null;
@@ -6503,6 +8219,22 @@
       player.bob = 0;
       player.recoil = 0;
       player.flashT = 0;
+      player.velocityY = 0;
+      player.grounded = true;
+      player.airDashUsed = false;
+      player.slashT = 0;
+      player.slashHitDone = false;
+      player.slashId = 0;
+      player.supplyBlock = 0;
+
+      for (var si = 0; si < supplyStations.length; si++) {
+        supplyStations[si].cooldown = 0;
+      }
+      cancelSupply();
+      for (var sf = 0; sf < slashFxPool.length; sf++) {
+        slashFxPool[sf].alive = false;
+        slashFxPool[sf].mesh.visible = false;
+      }
 
       gameTime = 0;
       runTime = 0;
@@ -6522,8 +8254,9 @@
       setArenaPhase(0);
 
       ui.bossBar.hidden = true;
-      ui.bossBar.classList.remove('is-shielded', 'is-exposed');
+      ui.bossBar.classList.remove('is-shielded', 'is-exposed', 'is-enraged');
       ui.hint.hidden = true;
+      ui.supplyPanel.hidden = true;
       ui.banner.hidden = true;
       if (ui.toasts) ui.toasts.innerHTML = '';
       ui.damage.style.opacity = '0';
@@ -6532,6 +8265,7 @@
       ui.hitmarker.classList.remove('show', 'kill');
 
       resetWeapons();
+      updateSupplyVisuals();
       updateHud();
     }
 
@@ -6555,6 +8289,11 @@
       if (mode !== 'playing') return;
       mode = 'paused';
       clearInput();
+      cancelSupply();
+      weapons[currentWeapon].reloading = 0;
+      player.slashT = 0;
+      player.slashHitDone = false;
+      if (ui.supplyPanel) ui.supplyPanel.hidden = true;
       releaseLock();
       showOverlay('paused');
     }
@@ -6572,6 +8311,10 @@
       if (mode === 'won' || mode === 'lost') return;
       mode = 'lost';
       clearInput();
+      cancelSupply();
+      weapons[currentWeapon].reloading = 0;
+      player.slashT = 0;
+      player.slashHitDone = false;
       releaseLock();
       hud.classList.add('is-hidden');
       showOverlay('lost');
@@ -6627,7 +8370,7 @@
         ui.ovKicker.textContent = 'BREACH PROTOCOL // 断层级指令';
         ui.ovTitle.innerHTML = 'PIXEL<span>//</span>BREACH';
         ui.ovSub.textContent = '断 层 突 围';
-        ui.ovDesc.textContent = '断层设施已失守。穿过两波封锁，拆掉零号守门者的核心，然后从出口撤离。鼠标会被锁定，WASD 移动，左键攻击。';
+        ui.ovDesc.textContent = '落日船坞已失守。穿过入口堆场、集装箱区与装卸平台，拆掉零号守门者的 500 点核心，再从开放船坞尽头的出口撤离。WASD 移动，SPACE 跳跃，E 补给/撤离。';
         ui.ovBtn.innerHTML = '开始突入 <kbd>ENTER</kbd>';
         ui.ovFoot.textContent = '点击开始 · 浏览器会锁定鼠标指针';
       } else if (kind === 'paused') {
@@ -6641,7 +8384,7 @@
         ui.ovKicker.textContent = 'BREACH COMPLETE // 断层已突破';
         ui.ovTitle.textContent = 'ESCAPED';
         ui.ovSub.textContent = '断 层 已 突 破';
-        ui.ovDesc.textContent = '零号守门者已解体，出口链路恢复。你的信号离开了断层设施。';
+        ui.ovDesc.textContent = '零号守门者已解体，出口链路恢复。你的信号离开了落日船坞。';
         ui.ovBtn.innerHTML = '再次突入 <kbd>ENTER</kbd>';
         ui.ovBtn.classList.add('is-ready');
         ui.ovFoot.textContent = '数据回收完成 // 无异常残留';
@@ -6649,7 +8392,7 @@
         ui.ovKicker.textContent = 'SIGNAL LOST // 作战失败';
         ui.ovTitle.textContent = 'FLATLINE';
         ui.ovSub.textContent = '信 号 中 断';
-        ui.ovDesc.textContent = '生命体征归零，断层设施重新封闭。检查武器与技能冷却，再试一次。';
+        ui.ovDesc.textContent = '生命体征归零，船坞重新封锁。检查武器、跳跃与技能冷却，再试一次。';
         ui.ovBtn.innerHTML = '重新连接 <kbd>ENTER</kbd>';
         ui.ovBtn.classList.add('is-danger');
         ui.ovFoot.textContent = 'Enter 重新突入 // 进度将重置';
@@ -6660,6 +8403,7 @@
 
     function updateHud() {
       if (!ui || !ui.hpText) return;
+      updateZoneTag();
 
       var count = flow.bossActive ? enemies.length : enemies.length + pending.length;
       setText(ui.enemyCount, '敌人 ' + String(count).padStart(2, '0'));
@@ -6689,6 +8433,16 @@
       ui.pulseFill.style.width = ((1 - player.pulseCd / 8) * 100).toFixed(1) + '%';
       setText(ui.pulseCd, pulseReady ? '就绪' : player.pulseCd.toFixed(1) + 's');
 
+      if (ui.moveState) {
+        var airText;
+        if (player.grounded) airText = 'GROUND // SPACE 跳跃';
+        else if (player.airDashUsed) airText = 'AIRBORNE // 空中突进已用';
+        else airText = 'AIRBORNE // Q 空中突进可用';
+        setText(ui.moveState, airText);
+        ui.moveState.classList.toggle('is-air', !player.grounded);
+        ui.moveState.classList.toggle('is-spent', !player.grounded && player.airDashUsed);
+      }
+
       var w = currentGun();
       var d = w.def;
       setText(ui.weaponSlot, d.slot);
@@ -6704,6 +8458,10 @@
         ui.ammoMag.classList.toggle('is-low', w.mag <= Math.ceil(d.magSize * 0.25));
       }
       ui.reloadTag.hidden = w.reloading <= 0;
+      if (w.reloading > 0) {
+        setText(ui.reloadTag, 'RELOADING ' +
+          Math.round((1 - w.reloading / d.reloadTime) * 100) + '%');
+      }
 
       for (var s = 0; s < ui.slots.length; s++) {
         ui.slots[s].classList.toggle('active', s === currentWeapon);
@@ -6713,21 +8471,23 @@
       ui.bossBar.hidden = !showBoss;
       if (showBoss) {
         var bhp = boss ? Math.max(0, boss.hp) : 0;
-        ui.bossFill.style.width = ((bhp / 160) * 100).toFixed(1) + '%';
-        setText(ui.bossHpText, Math.ceil(bhp) + ' / 160');
+        ui.bossFill.style.width = ((bhp / 500) * 100).toFixed(1) + '%';
+        setText(ui.bossHpText, Math.ceil(bhp) + ' / 500');
         if (boss) {
           setText(ui.bossPhase, 'PHASE ' + boss.phase);
           var state = 'CORE ONLINE';
-          if (boss.invuln > 0) state = 'REBOOTING';
+          if (boss.enraged) state = 'ENRAGED // 核心过载';
+          else if (boss.invuln > 0) state = 'REBOOTING';
           else if (boss.shield > 0) state = 'SHIELD ACTIVE';
           else if (boss.exposed > 0) state = 'CORE EXPOSED';
           setText(ui.bossState, state);
           ui.bossBar.classList.toggle('is-shielded', boss.shield > 0);
           ui.bossBar.classList.toggle('is-exposed', boss.exposed > 0);
+          ui.bossBar.classList.toggle('is-enraged', !!boss.enraged);
         } else {
           setText(ui.bossPhase, 'CORE OFFLINE');
           setText(ui.bossState, 'SECTOR CLEAR');
-          ui.bossBar.classList.remove('is-shielded', 'is-exposed');
+          ui.bossBar.classList.remove('is-shielded', 'is-exposed', 'is-enraged');
         }
       }
 
@@ -6824,13 +8584,17 @@
 
       input.keys[code] = true;
       if (code === 'ShiftLeft' || code === 'ShiftRight') input.sprint = true;
+      if (code === 'Space') e.preventDefault();
 
       if (e.repeat) return;
 
       if (code === 'KeyR') startReload();
       else if (code === 'KeyQ') tryDash();
       else if (code === 'KeyF') tryPulse();
-      else if (code === 'KeyE') interactExit();
+      else if (code === 'Space') tryJump();
+      else if (code === 'KeyE') {
+        if (!tryStartSupply()) interactExit();
+      }
       else if (code === 'Digit1' || code === 'Numpad1') switchWeapon(0);
       else if (code === 'Digit2' || code === 'Numpad2') switchWeapon(1);
       else if (code === 'Digit3' || code === 'Numpad3') switchWeapon(2);
@@ -6894,14 +8658,13 @@
 
     function updateMenu(dt) {
       menuT += dt;
-      // Stay inside the room (ceiling is at y=4.5, walls at x=±21 / z=±17).
-      var r = 13.6;
+      // Slow orbit over the container yard looking toward the boss dock.
       camera.position.set(
-        Math.sin(menuT * 0.09) * r,
-        3.35 + Math.sin(menuT * 0.23) * 0.35,
-        Math.cos(menuT * 0.09) * r
+        Math.sin(menuT * 0.06) * 24,
+        5.6 + Math.sin(menuT * 0.23) * 0.5,
+        -8 + Math.cos(menuT * 0.06) * 19
       );
-      aimCameraAt(new THREE.Vector3(0, 1.7, 0));
+      aimCameraAt(new THREE.Vector3(0, 2.0, -32));
       if (Math.abs(camera.fov - 66) > 0.01) {
         camera.fov = 66;
         camera.updateProjectionMatrix();
@@ -6915,7 +8678,6 @@
     function updateRegionAmbient(dt) {
       var hex = ambientTint.baseHex;
       var intensity = 1.05;
-      var px = camera.position.x;
       var pz = camera.position.z;
       var phase = arenaMood ? arenaMood.phase : 0;
       var nearExit = dist2D(camera.position, exit.pos) < 4.8;
@@ -6923,18 +8685,21 @@
       if (nearExit) {
         hex = exit.unlocked ? 0x466d5c : 0x5c4650;
         intensity = 1.04;
-      } else if (pz > 7.5) {
-        // Cold cyan entry fill; the warm maintenance lamps stay as accents.
-        hex = 0x426f86;
-        intensity = 1.04;
-      } else if (Math.abs(px) > 14.5 && pz > -14.2) {
-        hex = 0x655042;
+      } else if (pz > 9.5) {
+        // Warm gate fill against the blue dusk.
+        hex = 0x6a4a56;
         intensity = 1.02;
-      } else if (pz < -6.5) {
-        if (phase === 2) hex = 0x6a5a3f;
-        else if (phase === 3) hex = 0x653b3b;
+      } else if (pz > -8.5) {
+        // Container yard: cool blue-purple shade between warm pools.
+        hex = 0x4a587a;
+        intensity = 1.04;
+      } else if (pz > -22.5) {
+        hex = 0x6a5044;
+        intensity = 1.02;
+      } else if (pz < -22.5) {
+        if (phase === 3) hex = 0x6a3b3b;
         else if (phase === 4) hex = 0x456d5c;
-        else hex = 0x42607a;
+        else hex = 0x4a5a82;
         intensity = 1.03;
       } else {
         hex = 0x486b86;
@@ -6998,6 +8763,7 @@
 
         updatePending(dt);
         updatePlayer(dt);
+        updateSupply(dt);
         updateWeapons(dt);
         updateFlow(dt);
         updateEnemies(dt);
@@ -7022,6 +8788,7 @@
       }
 
       updateSparks(dt);
+      updateSlashFx(dt);
       updateBulletTrails(dt);
       updateAmbient(dt);
       renderer.render(scene, camera);
@@ -7109,22 +8876,32 @@
         shockwaves: MAX.shockwaves,
         volumetricBeams: VOLUME_BEAM_LIMIT,
         reflectionStrips: REFLECTION_STRIP_LIMIT,
+        slashArcs: SLASH_FX_LIMIT,
         particles: MAX.particles,
+        sentinels: SENTINEL_POOL_SIZE,
+        turrets: TURRET_POOL_SIZE,
+        bosses: bossPool ? 1 : 0,
         localLights: THREE.MAX_LOCAL_LIGHTS || 5,
         shadowSlots: CONTACT_SHADOW_LIMIT
       },
       snapshot: function () {
+        var activeSentinels = 0;
+        var activeTurrets = 0;
         var activeSparks = 0;
         var activeTrails = 0;
         var activeVolumes = 0;
         var activeStrips = 0;
         var activeTracers = 0;
         var activeRings = 0;
+        var activeSlashes = 0;
         var i;
+        for (i = 0; i < sentinelPool.length; i++) if (sentinelPool[i].active) activeSentinels++;
+        for (i = 0; i < turretPool.length; i++) if (turretPool[i].active) activeTurrets++;
         for (i = 0; i < sparkFxPool.length; i++) if (sparkFxPool[i].alive) activeSparks++;
         for (i = 0; i < bulletTrailPool.length; i++) if (bulletTrailPool[i].owner) activeTrails++;
         for (i = 0; i < tracerFxPool.length; i++) if (tracerFxPool[i].alive) activeTracers++;
         for (i = 0; i < ringFxPool.length; i++) if (ringFxPool[i].alive) activeRings++;
+        for (i = 0; i < slashFxPool.length; i++) if (slashFxPool[i].alive) activeSlashes++;
         for (i = 0; i < volumetricBeams.length; i++) if (volumetricBeams[i].group.visible) activeVolumes++;
         for (i = 0; i < reflectionStrips.length; i++) if (reflectionStrips[i].mesh.visible) activeStrips++;
         return {
@@ -7134,6 +8911,14 @@
           sparks: activeSparks,
           bulletTrails: activeTrails,
           rings: activeRings,
+          slashArcs: activeSlashes,
+          standables: standables.length,
+          sentinels: activeSentinels,
+          turrets: activeTurrets,
+          bossActive: !!(boss && boss.alive),
+          supplyCooldowns: supplyStations.map(function (s) {
+            return Math.round(s.cooldown * 10) / 10;
+          }),
           lasers: lasers.length,
           laserPhase: lasers.length ? lasers[0].phase : 0,
           shockwaves: shockwaves.length,
