@@ -222,14 +222,20 @@ body {
   position: absolute;
   inset: 0;
   opacity: 0;
-  background: rgba(87, 242, 255, 0.5);
+  background:
+    radial-gradient(ellipse at center, rgba(255, 255, 255, 0.42), transparent 34%),
+    radial-gradient(ellipse at center, var(--flash-color, #57f2ff), transparent 78%);
   mix-blend-mode: screen;
   transition: opacity 0.3s ease-out;
 }
 
 .flash.on {
-  opacity: 0.5;
+  opacity: 0.58;
   transition: none;
+}
+
+.flash.on.is-hard {
+  opacity: 0.9;
 }
 
 /* -------------------------------------------------------------------- hud */

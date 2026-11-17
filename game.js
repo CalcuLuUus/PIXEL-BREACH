@@ -2,7 +2,7 @@
    PIXEL//BREACH — 断层突围
    A 3D pixel-styled first-person breach demo.
 
-   Rendering : 480x270 WebGL backbuffer, nearest-neighbour upscale (CSS)
+   Rendering : 640x360 WebGL backbuffer, nearest-neighbour upscale (CSS)
    Assets    : none — procedural geometry, materials and lights only
    Network   : none. vendor/three.min.js is a local offline build.
    ========================================================================== */
@@ -11,8 +11,8 @@
   'use strict';
 
   var VENDOR_SRC = 'vendor/three.min.js';
-  var RES_W = 480;
-  var RES_H = 270;
+  var RES_W = 640;
+  var RES_H = 360;
 
   function byId(id) {
     return document.getElementById(id);
@@ -134,7 +134,12 @@
     var camera = new THREE.PerspectiveCamera(74, RES_W / RES_H, 0.06, 120);
     scene.add(camera);
 
-    scene.add(new THREE.AmbientLight(0x4d6d94, 1.05));
+    var ambientLight = new THREE.AmbientLight(0x4d6d94, 1.05);
+    scene.add(ambientLight);
+    var ambientTint = {
+      target: new THREE.Color(0x4d6d94),
+      baseHex: 0x4d6d94
+    };
     var sun = new THREE.DirectionalLight(0xe2f1ff, 1.12);
     sun.position.set(-0.45, 1, 0.3);
     scene.add(sun);
@@ -169,15 +174,17 @@
     }
 
     var MAT = {
-      floor: matLambert(C.floor),
-      ceiling: matLambert(0x05090f),
-      wall: matLambert(C.wall),
-      wallDark: matLambert(C.wallDark),
-      steel: matLambert(C.steel),
+      // V3 pushes the stepped specular response harder so local lights read as
+      // wet/dusty industrial metal instead of a flat unlit pixel fill.
+      floor: matLambert(C.floor, { specular: 0.46, roughness: 0.32 }),
+      ceiling: matLambert(0x05090f, { specular: 0.04, roughness: 0.9 }),
+      wall: matLambert(C.wall, { specular: 0.18, roughness: 0.62 }),
+      wallDark: matLambert(C.wallDark, { specular: 0.12, roughness: 0.7 }),
+      steel: matLambert(C.steel, { specular: 0.56, roughness: 0.3 }),
       grid: matBasic(0x16455c, { transparent: true, opacity: 0.62 }),
       trim: matBasic(0x2c8ba8),
       trimPink: matBasic(0x8a2d63),
-      cover: matLambert(0x16233a),
+      cover: matLambert(0x16233a, { specular: 0.24, roughness: 0.46 }),
       coverTrim: matBasic(0x2a6f8c),
       lamp: matBasic(0xa9f8ff),
       portalLocked: matBasic(C.red, { transparent: true, opacity: 0.55, blending: 'additive', depthWrite: false }),
@@ -229,22 +236,22 @@
     // Shared industrial palette.  Lambert materials carry the form, the
     // unlit entries are paint / signage / phosphor that must stay readable.
     var IM = {
-      steel: matLambert(0x56636e),
-      steel2: matLambert(0x74808a),
-      steelDark: matLambert(0x343d45),
-      steelDeep: matLambert(0x20272e),
-      concrete: matLambert(0x6a6b62),
-      concrete2: matLambert(0x7a7b72),
-      concreteDark: matLambert(0x4a4c46),
-      concreteLight: matLambert(0x8a8a80),
-      rust: matLambert(0x8b4c30),
-      rustDark: matLambert(0x583226),
-      rustLight: matLambert(0xad663d),
-      copper: matLambert(0x9a6d3f),
-      brass: matLambert(0xa98b4a),
-      black: matLambert(0x101518),
-      cable: matLambert(0x171c20),
-      oil: matLambert(0x1e2321),
+      steel: matLambert(0x56636e, { specular: 0.56, roughness: 0.32 }),
+      steel2: matLambert(0x74808a, { specular: 0.68, roughness: 0.26 }),
+      steelDark: matLambert(0x343d45, { specular: 0.38, roughness: 0.42 }),
+      steelDeep: matLambert(0x20272e, { specular: 0.24, roughness: 0.54 }),
+      concrete: matLambert(0x6a6b62, { specular: 0.08, roughness: 0.88 }),
+      concrete2: matLambert(0x7a7b72, { specular: 0.1, roughness: 0.84 }),
+      concreteDark: matLambert(0x4a4c46, { specular: 0.07, roughness: 0.9 }),
+      concreteLight: matLambert(0x8a8a80, { specular: 0.13, roughness: 0.8 }),
+      rust: matLambert(0x8b4c30, { specular: 0.2, roughness: 0.72, specularColor: 0xffbb80 }),
+      rustDark: matLambert(0x583226, { specular: 0.14, roughness: 0.8, specularColor: 0xffa070 }),
+      rustLight: matLambert(0xad663d, { specular: 0.26, roughness: 0.66, specularColor: 0xffcf9a }),
+      copper: matLambert(0x9a6d3f, { specular: 0.72, roughness: 0.28, specularColor: 0xffd6a0 }),
+      brass: matLambert(0xa98b4a, { specular: 0.68, roughness: 0.3, specularColor: 0xffe3b0 }),
+      black: matLambert(0x101518, { specular: 0.12, roughness: 0.58 }),
+      cable: matLambert(0x171c20, { specular: 0.18, roughness: 0.55 }),
+      oil: matLambert(0x1e2321, { specular: 0.3, roughness: 0.28 }),
       hazard: matBasic(0xd1a82f),
       hazardDark: matBasic(0x1c1d18),
       white: matBasic(0xdfe3dc),
@@ -256,8 +263,70 @@
       lampRed: matBasic(0xff675c),
       fxLine: matBasic(0x58ddff),
       fxPylon: matBasic(0x3ec8dd),
-      fxAlarm: matBasic(0xff584f)
+      fxAlarm: matBasic(0xff584f),
+
+      // Conservative pseudo-lighting: unlit layered decals.  AO is a normal
+      // black blend; light pools/halos use additive blending.  Every entry is
+      // a single merged batch, so the whole scene still costs a handful of
+      // draw calls and nothing is allocated per frame.
+      ao: matBasic(0x000000, {
+        transparent: true, opacity: 0.15, depthWrite: false, fog: false
+      }),
+      aoSoft: matBasic(0x000000, {
+        transparent: true, opacity: 0.07, depthWrite: false, fog: false
+      }),
+      glowWarm: matBasic(0xff9a4a, {
+        transparent: true, opacity: 0.05, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowWarmCore: matBasic(0xffd18a, {
+        transparent: true, opacity: 0.09, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowRust: matBasic(0xff6a3d, {
+        transparent: true, opacity: 0.045, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowRustCore: matBasic(0xffb27a, {
+        transparent: true, opacity: 0.08, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowCool: matBasic(0x4fdcff, {
+        transparent: true, opacity: 0.05, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowCoolCore: matBasic(0xaef7ff, {
+        transparent: true, opacity: 0.09, blending: 'additive', depthWrite: false, fog: false
+      }),
+
+      // Pseudo-reflections: long, directional additive slivers baked on the
+      // floor and walls.  They read like blurred source colour bouncing off
+      // wet metal, but they are ordinary merged geometry, not SSR/RT.
+      reflectWarm: matBasic(0xffa95c, {
+        transparent: true, opacity: 0.075, blending: 'additive', depthWrite: false, fog: false
+      }),
+      reflectCool: matBasic(0x63e8ff, {
+        transparent: true, opacity: 0.07, blending: 'additive', depthWrite: false, fog: false
+      }),
+      reflectRust: matBasic(0xff6a3d, {
+        transparent: true, opacity: 0.07, blending: 'additive', depthWrite: false, fog: false
+      }),
+      reflectBoss: matBasic(0xff4fb8, {
+        transparent: true, opacity: 0.085, blending: 'additive', depthWrite: false, fog: false
+      }),
+      reflectExit: matBasic(0xff4d6d, {
+        transparent: true, opacity: 0.07, blending: 'additive', depthWrite: false, fog: false
+      })
     };
+
+    var zoneGlowMats = [
+      { mat: IM.glowWarm, base: 0.05, speed: 0.7, phase: 0.4 },
+      { mat: IM.glowWarmCore, base: 0.09, speed: 0.9, phase: 1.7 },
+      { mat: IM.glowRust, base: 0.045, speed: 0.55, phase: 2.6 },
+      { mat: IM.glowRustCore, base: 0.08, speed: 0.75, phase: 4.1 },
+      { mat: IM.glowCool, base: 0.05, speed: 0.8, phase: 3.2 },
+      { mat: IM.glowCoolCore, base: 0.09, speed: 1.05, phase: 5.3 },
+      { mat: IM.reflectWarm, base: 0.075, speed: 0.62, phase: 0.9 },
+      { mat: IM.reflectCool, base: 0.07, speed: 0.74, phase: 2.2 },
+      { mat: IM.reflectRust, base: 0.07, speed: 0.52, phase: 3.7 },
+      { mat: IM.reflectBoss, base: 0.085, speed: 2.3, phase: 1.1 },
+      { mat: IM.reflectExit, base: 0.07, speed: 1.7, phase: 4.6 }
+    ];
 
     /* -------------------------------------------------- local pixel patterns */
 
@@ -524,6 +593,9 @@
       geo.setIndex(new Uint16Array(this.idx));
       this.mesh = new THREE.Mesh(geo, this.material);
       this.mesh.name = 'pixel-batch-' + this.key;
+      // Keep the baked contact darkening underneath the additive fake lights.
+      if (this.key === 'aoSoft') this.mesh.renderOrder = -3;
+      else if (this.key === 'ao') this.mesh.renderOrder = -2;
       scene.add(this.mesh);
       this.p = null;
       this.n = null;
@@ -584,6 +656,14 @@
       var h = width / 2;
       b.pipe(x - dx * h, y - dy * h, z - dz * h,
         x + dx * h, y + dy * h, z + dz * h, r, 8);
+      // A thin occlusion ring on the upstream side seats the flange into the
+      // pipe run instead of letting it float as a bright collar.
+      var ao = getBatch('aoSoft');
+      if (ao && r > 0.05) {
+        ao.pipe(x - dx * (h + 0.026), y - dy * (h + 0.026), z - dz * (h + 0.026),
+          x - dx * (h + 0.004), y - dy * (h + 0.004), z - dz * (h + 0.004),
+          r * 1.06, 8);
+      }
     }
 
     function addBoltRing(cx, cy, cz, dx, dy, dz, radius, count, size) {
@@ -840,27 +920,65 @@
       }
     }
 
+    function addContactAO(x, z, sx, sz, yaw, softOnly) {
+      var outer = getBatch('aoSoft');
+      if (outer) outer.box(x, 0.058, z, sx, 0.006, sz, yaw || 0);
+      if (softOnly) return;
+      var core = getBatch('ao');
+      if (core) core.box(x, 0.06, z, sx * 0.68, 0.006, sz * 0.68, yaw || 0);
+    }
+
+    function addWallAO(x, y, z, sx, sy, sz, yaw, softOnly) {
+      var outer = getBatch('aoSoft');
+      if (outer) outer.box(x, y, z, sx, sy, sz, yaw || 0);
+      if (softOnly) return;
+      var core = getBatch('ao');
+      if (core) core.box(x, y, z, sx * 0.62, sy * 0.82, sz * 1.4, yaw || 0);
+    }
+
+    // Two low-opacity additive slabs per region.  They are merged into the
+    // static art batches, so region colour is almost free at runtime.
+    function addZoneLightPool(x, z, radius, key) {
+      var outer = getBatch('glow' + key);
+      var core = getBatch('glow' + key + 'Core');
+      if (outer) outer.box(x, 0.062, z, radius * 2, 0.005, radius * 2, 0);
+      if (core) core.box(x, 0.064, z, radius * 1.06, 0.005, radius * 1.06, 0);
+    }
+
     function addFloorGlow(x, z, radius, hex, opacity) {
       if (floorGlows.length >= 14) return null;
       var mat = matBasic(hex, {
         transparent: true,
-        opacity: opacity,
+        opacity: opacity * 1.25,
         blending: 'additive',
         depthWrite: false,
         fog: false
       });
       var mesh = new THREE.Mesh(G.circle, mat);
-      mesh.position.set(x, 0.047, z);
+      mesh.position.set(x, 0.055, z);
       mesh.scale.set(radius, 1, radius);
       scene.add(mesh);
       floorGlows.push({
         mesh: mesh,
         mat: mat,
-        base: opacity,
+        base: opacity * 1.25,
         phase: arand(0, Math.PI * 2),
         speed: arand(0.7, 1.5)
       });
       return mat;
+    }
+
+    // Directional colour strips baked into the static batches.  These are the
+    // cheap "ray-traced" read: a source colour dragged across the floor toward
+    // the viewer instead of a flat circle around the emitter.
+    function addReflectionFloor(key, x, z, yaw, length, width) {
+      var b = getBatch(key);
+      if (b) b.box(x, 0.072, z, width, 0.006, length, yaw || 0);
+    }
+
+    function addReflectionWall(key, x, y, z, yaw, width, height) {
+      var b = getBatch(key);
+      if (b) b.box(x, y, z, width, height, 0.012, yaw || 0);
     }
 
     function addLamp(x, z, colorKey, glowHex) {
@@ -877,7 +995,21 @@
         cage.box(x - 1.05, 4.34, z, 0.045, 0.22, 0.045, 0);
         cage.box(x + 1.05, 4.34, z, 0.045, 0.22, 0.045, 0);
       }
+      // Layered bloom around the tube: wide warm/cool spill plus a hot core.
+      var warm = glowHex === 0xffb153;
+      var halo = getBatch(warm ? 'glowWarm' : 'glowCool');
+      var haloCore = getBatch(warm ? 'glowWarmCore' : 'glowCoolCore');
+      if (halo) halo.box(x, 4.02, z, 3.0, 0.5, 0.82, 0);
+      if (haloCore) haloCore.box(x, 4.04, z, 1.45, 0.22, 0.46, 0);
       addFloorGlow(x, z, 2.7, glowHex, 0.055);
+
+      // Reflected colour streaks under the fixture, biased toward the middle
+      // of the arena so the floor reads as a brushed metal surface.
+      var refl = warm ? 'reflectWarm' : 'reflectCool';
+      var towardCenter = z >= 0 ? -1 : 1;
+      addReflectionFloor(refl, x, z + towardCenter * 1.55, 0, 3.2, 0.3);
+      addReflectionFloor(refl, x - 0.56, z + towardCenter * 1.1, 0, 2.35, 0.12);
+      addReflectionFloor(refl, x + 0.56, z + towardCenter * 1.1, 0, 2.35, 0.12);
     }
 
     function addIBeam(x, z, h, width, yaw) {
@@ -886,6 +1018,7 @@
       var rust = getBatch('rust');
       if (!b) return;
       yaw = yaw || 0;
+      addContactAO(x, z, width * 2.45, width * 2.45, yaw);
       b.box(x, h / 2, z, width * 0.22, h, width * 0.22, yaw);
       var pt = localXZ(x, z, 0, width * 0.38, yaw);
       b.box(pt[0], h / 2, pt[1], width, h, 0.11, yaw);
@@ -910,6 +1043,7 @@
       var rust = getBatch('rust');
       var stripe = getBatch(tag === 'danger' ? 'redPaint' : 'hazard');
       if (!body || !edge) return;
+      if (y < 0.05) addContactAO(x, z, sx * 1.5, sz * 1.5, yaw);
       body.box(x, y + sy / 2, z, sx, sy, sz, yaw);
       var c = Math.cos(yaw || 0), s = Math.sin(yaw || 0);
       edge.box(x, y + sy - 0.05, z, sx * 1.03, 0.1, sz * 1.03, yaw);
@@ -934,6 +1068,7 @@
       var top = getBatch('steel2');
       if (!b || !hoop) return;
       var r = 0.3 * scale, h = 0.82 * scale;
+      addContactAO(x, z, r * 3.1, r * 3.1, 0);
       b.pipe(x, 0.02, z, x, h, z, r, 8);
       hoop.pipe(x, h * 0.25, z, x, h * 0.25 + 0.045, z, r * 1.05, 8);
       hoop.pipe(x, h * 0.7, z, x, h * 0.7 + 0.045, z, r * 1.05, 8);
@@ -1088,6 +1223,7 @@
       var face = getBatch('black');
       var trim = getBatch('steel2');
       if (!body || !face || !trim) return;
+      addContactAO(x, z, w * 1.7, 1.15, yaw);
       body.box(x, h / 2, z, w, h, 0.55, yaw);
       var p = localXZ(x, z, 0, 0.29, yaw);
       face.box(p[0], h * 0.62, p[1], w * 0.72, h * 0.3, 0.035, yaw);
@@ -1109,6 +1245,7 @@
       var trim = getBatch('steel2');
       var danger = getBatch('hazard');
       if (!body || !shell) return;
+      addContactAO(x, z, 5.1, 2.3, yaw);
       body.box(x, 0.3, z, 4.12, 0.55, 1.46, yaw);
       shell.box(x, 1.15, z, 3.72, 1.3, 1.36, yaw);
       body.box(x, 1.84, z, 3.5, 0.1, 1.28, yaw);
@@ -1144,6 +1281,7 @@
 
     function addBossPylon(x, z) {
       addIBeam(x, z, 4.15, 0.72, 0);
+      addContactAO(x, z, 2.1, 2.1, 0);
       var trim = getBatch('steel2');
       var glow = getBatch('fxPylon');
       if (trim) {
@@ -1171,6 +1309,7 @@
       var line = 0x58ddff;
       var pylon = 0x3ec8dd;
       var beacon = 0x58ddff;
+      var reflect = 0xff4fb8;
       var fog = 0x03060c;
       var near = 15;
       var far = 47;
@@ -1190,6 +1329,7 @@
         line = 0x8ff4ff;
         pylon = 0x67e4ef;
         beacon = 0xffc45a;
+        reflect = 0x9b6bff;
         fog = 0x080b12;
         near = 13;
         far = 42;
@@ -1200,6 +1340,7 @@
         line = 0xff584f;
         pylon = 0xff6b55;
         beacon = 0xff3d32;
+        reflect = 0xff3d32;
         fog = 0x170507;
         near = 10;
         far = 34;
@@ -1211,6 +1352,7 @@
         line = 0x6dffb0;
         pylon = 0x6dffb0;
         beacon = 0x6dffb0;
+        reflect = 0x6dffb0;
         fog = 0x030a0b;
         near = 15;
         far = 47;
@@ -1219,6 +1361,9 @@
       arenaMood.lineMat.color.setHex(line);
       arenaMood.pylonMat.color.setHex(pylon);
       arenaMood.beaconMat.color.setHex(beacon);
+      IM.reflectBoss.color.setHex(reflect);
+      if (arenaMood.arenaGlowMat) arenaMood.arenaGlowMat.color.setHex(pylon);
+      if (arenaMood.arenaGlowCoreMat) arenaMood.arenaGlowCoreMat.color.setHex(beacon);
       arenaMood.fenceMat.color.setHex(fence);
       arenaMood.fenceMat.opacity = fenceOpacity;
       arenaMood.barrierGroup.visible = barrier;
@@ -1255,6 +1400,8 @@
       if (!arenaMood) return;
       var m = arenaMood;
       var pulse = 0.5 + 0.5 * Math.sin(worldClock * (m.phase === 3 ? 8 : 3.2));
+      if (m.arenaGlowMat) m.arenaGlowMat.opacity = 0.026 + pulse * 0.02;
+      if (m.arenaGlowCoreMat) m.arenaGlowCoreMat.opacity = 0.042 + pulse * 0.033;
       if (m.phase === 2) {
         m.fenceMat.opacity = 0.14 + pulse * 0.12;
         m.beaconMat.opacity = 0.55 + pulse * 0.35;
@@ -1492,6 +1639,17 @@
       addSignPanel(13.8, 3.45, 16.82, Math.PI, 2.4, 0.66, 'N-07', 'white');
       addSignPanel(-13.8, 3.45, 16.82, Math.PI, 2.4, 0.66, 'M-04', 'white');
       addSignPanel(0, 3.42, 16.82, Math.PI, 4.8, 0.82, 'MAINTENANCE', 'white');
+
+      // Wall/floor contact darkening.  Two merged strips per wall keep the
+      // corners and panel bases seated without adding per-frame work.
+      addWallAO(0, 0.62, 16.7, 41.6, 1.16, 0.07, 0);
+      addWallAO(0, 0.62, -16.7, 41.6, 1.16, 0.07, 0);
+      addWallAO(20.7, 0.62, 0, 0.07, 1.16, 33.6, 0);
+      addWallAO(-20.7, 0.62, 0, 0.07, 1.16, 33.6, 0);
+      addWallAO(20.35, 1.9, 16.35, 0.55, 3.8, 0.55, 0);
+      addWallAO(-20.35, 1.9, 16.35, 0.55, 3.8, 0.55, 0);
+      addWallAO(20.35, 1.9, -16.35, 0.55, 3.8, 0.55, 0);
+      addWallAO(-20.35, 1.9, -16.35, 0.55, 3.8, 0.55, 0);
     }
 
     function buildEntryZone() {
@@ -1535,6 +1693,18 @@
       addFloorGlow(0, 9.2, 3.7, 0xffb153, 0.085);
       addFloorGlow(-10.5, 13.5, 2.2, 0xffb153, 0.045);
       addFloorGlow(10.5, 13.5, 2.2, 0xffb153, 0.04);
+      addZoneLightPool(0, 13.1, 5.3, 'Warm');
+      addZoneLightPool(0, 8.2, 3.4, 'Warm');
+      addZoneLightPool(-12.6, 13.4, 2.5, 'Warm');
+      addZoneLightPool(12.6, 13.4, 2.5, 'Warm');
+
+      // Cold threshold line and warm bounce streaks make the entry read as a
+      // lit, polished approach instead of a flat floor plane.
+      addReflectionFloor('reflectCool', 0, 10.45, 0, 0.26, 11.8);
+      addReflectionFloor('reflectWarm', -6.9, 9.2, 0, 2.5, 0.16);
+      addReflectionFloor('reflectWarm', 6.9, 9.2, 0, 2.5, 0.16);
+      addReflectionFloor('reflectCool', -10.5, 12.1, 0, 2.4, 0.12);
+      addReflectionFloor('reflectCool', 10.5, 12.1, 0, 2.4, 0.12);
     }
 
     function buildPipeCorridor() {
@@ -1618,6 +1788,23 @@
         { x: 9.25, y: 4.14, z: 6.0 },
         { x: 9.5, y: 4.1, z: 14.0 }
       ], 0.03, 2, 'cable');
+
+      // Rusted pipe gallery: warm oxidised bounce under the cool service
+      // lamps, strongest where the flanges cluster along the side walls.
+      addZoneLightPool(-18.1, -1.6, 2.7, 'Rust');
+      addZoneLightPool(18.1, 2.2, 2.7, 'Rust');
+      addZoneLightPool(-18.1, 8.2, 2.3, 'Rust');
+      addZoneLightPool(18.1, -8.4, 2.3, 'Rust');
+
+      // Long directional rust reflections on the deck and side walls.
+      addReflectionFloor('reflectRust', -18.2, -1.6, 0, 4.4, 0.28);
+      addReflectionFloor('reflectRust', 18.2, 2.2, 0, 4.4, 0.28);
+      addReflectionFloor('reflectRust', -18.2, 8.2, 0, 3.3, 0.18);
+      addReflectionFloor('reflectRust', 18.2, -8.4, 0, 3.3, 0.18);
+      addReflectionWall('reflectRust', -20.62, 1.65, -1.6, Math.PI / 2, 4.2, 2.6);
+      addReflectionWall('reflectRust', 20.62, 1.65, 2.2, -Math.PI / 2, 4.2, 2.6);
+      addReflectionWall('reflectRust', -20.62, 1.9, 8.2, Math.PI / 2, 3.1, 2.2);
+      addReflectionWall('reflectRust', 20.62, 1.9, -8.4, -Math.PI / 2, 3.1, 2.2);
     }
 
     function buildEnergyHall() {
@@ -1657,6 +1844,18 @@
       addSignPanel(0, 1.25, -1.71, 0, 1.45, 0.42, 'CORE', 'white');
       addSignPanel(-20.82, 2.8, 1.7, Math.PI / 2, 2.7, 0.74, 'ENERGY HALL', 'hazard');
       addSignPanel(20.82, 2.82, -0.9, -Math.PI / 2, 2.7, 0.74, 'CORE LINK', 'white');
+      addZoneLightPool(0, -2.5, 4.8, 'Cool');
+      addZoneLightPool(0, -8.8, 2.8, 'Cool');
+
+      // Four radial cool streaks around the core, plus a broad reflected wash
+      // on the deck.  These align with the generator foot and read as bounce.
+      addReflectionFloor('reflectCool', 0, 0.4, 0, 3.4, 0.42);
+      addReflectionFloor('reflectCool', 0, -5.4, 0, 3.4, 0.42);
+      addReflectionFloor('reflectCool', 3.15, -2.5, Math.PI / 2, 3.4, 0.34);
+      addReflectionFloor('reflectCool', -3.15, -2.5, Math.PI / 2, 3.4, 0.34);
+      addReflectionFloor('reflectCool', 0, -2.5, 0, 1.3, 0.95);
+      addReflectionWall('reflectCool', -20.6, 1.45, -2.5, Math.PI / 2, 3.2, 2.1);
+      addReflectionWall('reflectCool', 20.6, 1.45, -2.5, -Math.PI / 2, 3.2, 2.1);
     }
 
     function buildCoverProps() {
@@ -1673,6 +1872,7 @@
       for (i = 0; i < covers.length; i++) {
         var s = covers[i];
         var x = s[0], z = s[1], sx = s[2], sz = s[3], h = s[4];
+        addContactAO(x, z, sx * 1.45, sz * 1.45, 0);
         if (i === 4) {
           // The generator skid supplies the visual body; keep the original
           // full-height cover volume so shots still stop at the console.
@@ -1721,6 +1921,7 @@
         col.scale.set(0.75, 4.5, 0.75);
         scene.add(col);
         addCollider(columns[c][0], columns[c][1], 1.5, 1.5, 0, 4.5);
+        addContactAO(columns[c][0], columns[c][1], 2.05, 2.05, 0);
         var crown = new THREE.Mesh(G.torus, matBasic(C.cyanDim));
         crown.position.set(columns[c][0], 4.1, columns[c][1]);
         crown.scale.set(0.8, 0.8, 0.8);
@@ -1848,6 +2049,52 @@
       addWallVent(-20.82, 3.18, -13.2, Math.PI / 2, 2.2, 1.15);
       addWallVent(20.82, 3.18, -13.2, -Math.PI / 2, 2.2, 1.15);
 
+      // Phase-tinted directional bounce across the boss deck and side walls.
+      // The material colour is retuned by setArenaPhase, so these strips track
+      // cyan -> amber -> red without extra draw calls.
+      addReflectionFloor('reflectBoss', 0, -13.1, 0, 5.6, 0.62);
+      addReflectionFloor('reflectBoss', -2.8, -13.1, Math.PI / 2, 4.3, 0.3);
+      addReflectionFloor('reflectBoss', 2.8, -13.1, Math.PI / 2, 4.3, 0.3);
+      addReflectionFloor('reflectBoss', 0, -10.2, 0, 4.6, 0.2);
+      addReflectionWall('reflectBoss', -20.6, 1.5, -13.1, Math.PI / 2, 6.0, 2.4);
+      addReflectionWall('reflectBoss', 20.6, 1.5, -13.1, -Math.PI / 2, 6.0, 2.4);
+
+      // Exit bounce spilling back into the arena.  reflectExit is recoloured
+      // red/green together with the door materials.
+      addReflectionFloor('reflectExit', 0, -14.2, 0, 3.5, 0.36);
+      addReflectionFloor('reflectExit', -1.28, -14.1, 0, 2.9, 0.13);
+      addReflectionFloor('reflectExit', 1.28, -14.1, 0, 2.9, 0.13);
+      addReflectionFloor('reflectExit', 0, -15.9, 0, 0.24, 4.15);
+
+      // Boss-region colour light.  These meshes are phase-recoloured by
+      // setArenaPhase; the geometry is created once with the arena.
+      var arenaGlowMat = matBasic(0x58ddff, {
+        transparent: true, opacity: 0.04, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var arenaGlowCoreMat = matBasic(0x9ff2ff, {
+        transparent: true, opacity: 0.07, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var arenaGlow = new THREE.Mesh(G.circle, arenaGlowMat);
+      arenaGlow.position.set(0, 0.066, -13.1);
+      arenaGlow.scale.set(5.9, 1, 5.9);
+      scene.add(arenaGlow);
+      var arenaCore = new THREE.Mesh(G.circle, arenaGlowCoreMat);
+      arenaCore.position.set(0, 0.068, -13.1);
+      arenaCore.scale.set(2.3, 1, 2.3);
+      scene.add(arenaCore);
+      for (var pg = -1; pg <= 1; pg += 2) {
+        var pylonGlow = new THREE.Mesh(G.circle, arenaGlowMat);
+        pylonGlow.position.set(pg * 18.85, 0.067, -10.8);
+        pylonGlow.scale.set(2.4, 1, 2.4);
+        scene.add(pylonGlow);
+        var pylonColumn = new THREE.Mesh(G.box, arenaGlowCoreMat);
+        pylonColumn.position.set(pg * 18.85, 2.1, -10.8);
+        pylonColumn.scale.set(0.46, 4.1, 0.46);
+        scene.add(pylonColumn);
+      }
+
       var broken = getBatch('cable');
       if (broken) {
         broken.pipe(20.65, 3.9, -8.8, 18.0, 3.7, -8.5, 0.035, 6);
@@ -1866,6 +2113,8 @@
         barrierGroup: barrierGroup,
         narrowGroup: narrowGroup,
         narrowMat: narrowMat,
+        arenaGlowMat: arenaGlowMat,
+        arenaGlowCoreMat: arenaGlowCoreMat,
         beacons: beacons,
         near: 15,
         far: 47,
@@ -1922,8 +2171,23 @@
       buildServiceLights();
       buildBossArena();
       commitArt();
+      buildContactShadowPool();
       buildExit();
+      buildLocalLightRig();
       buildAmbientMotes();
+      buildCinematicVolumes();
+      buildReflectionStripPool();
+      buildParticlePool();
+      buildRingPool();
+      buildTracerPool();
+      buildBulletFxPool();
+      buildBulletTrailPool();
+      buildDeflectFxPool();
+      buildMissileFxPool();
+      buildTelegraphPool();
+      buildLaserPool();
+      buildShockwavePool();
+      buildSparkPool();
       setArenaPhase(0);
     }
 
@@ -1933,8 +2197,12 @@
       group: null,
       ring: null,
       glow: null,
+      halo: null,
+      floorGlow: null,
       ringMat: null,
       glowMat: null,
+      haloMat: null,
+      floorMat: null,
       lightMat: null
     };
 
@@ -1943,7 +2211,16 @@
       group.position.copy(exit.pos);
       scene.add(group);
 
-      var frameMat = matLambert(0x1d2b42);
+      // Static contact shadow beneath the frame (created once with the exit).
+      var exitShadowMat = matBasic(0x000000, {
+        transparent: true, opacity: 0.18, depthWrite: false, fog: false
+      });
+      var exitShadow = new THREE.Mesh(G.circle, exitShadowMat);
+      exitShadow.position.set(0, -1.435, 0);
+      exitShadow.scale.set(3.05, 1, 2.15);
+      group.add(exitShadow);
+
+      var frameMat = matLambert(0x1d2b42, { specular: 0.38, roughness: 0.36 });
       var top = new THREE.Mesh(G.box, frameMat);
       top.position.set(0, 2.05, 0);
       top.scale.set(4.6, 0.4, 0.7);
@@ -1970,6 +2247,23 @@
       ring.position.set(0, 0.5, 0.02);
       group.add(ring);
 
+      exit.haloMat = matBasic(C.red, {
+        transparent: true, opacity: 0.16, blending: 'additive', depthWrite: false, fog: false
+      });
+      var halo = new THREE.Mesh(G.ring, exit.haloMat);
+      halo.rotation.x = Math.PI / 2;
+      halo.scale.set(2.15, 2.15, 2.15);
+      halo.position.set(0, 0.5, 0.01);
+      group.add(halo);
+
+      exit.floorMat = matBasic(C.red, {
+        transparent: true, opacity: 0.1, blending: 'additive', depthWrite: false, fog: false
+      });
+      var floorGlow = new THREE.Mesh(G.circle, exit.floorMat);
+      floorGlow.position.set(0, -1.43, 0);
+      floorGlow.scale.set(3.15, 1, 2.4);
+      group.add(floorGlow);
+
       exit.glowMat = matBasic(C.red, {
         transparent: true, opacity: 0.14, blending: 'additive', depthWrite: false
       });
@@ -1990,19 +2284,496 @@
       exit.group = group;
       exit.ring = ring;
       exit.glow = glow;
+      exit.halo = halo;
+      exit.floorGlow = floorGlow;
       updateExitVisuals();
     }
 
     function updateExitVisuals() {
       if (!exit.ringMat) return;
-      var col = exit.unlocked ? C.cyan : C.red;
+      var col = exit.unlocked ? C.green : C.red;
       exit.ringMat.color.setHex(col);
       exit.ringMat.opacity = exit.unlocked ? 0.85 : 0.5;
       exit.glowMat.color.setHex(col);
       exit.glowMat.opacity = exit.unlocked ? 0.26 : 0.1;
       exit.lightMat.color.setHex(col);
+      exit.haloMat.color.setHex(col);
+      exit.haloMat.opacity = exit.unlocked ? 0.24 : 0.1;
+      exit.floorMat.color.setHex(col);
+      exit.floorMat.opacity = exit.unlocked ? 0.16 : 0.055;
+      IM.reflectExit.color.setHex(col);
     }
 
+    /* ------------------------------------------------------- local light rig */
+    // Six fixed candidate emitters.  The renderer exposes five local-light
+    // slots, so the manager enables only the highest scoring five each frame.
+    // Every PointLight is built once here; the frame path only moves/retunes
+    // the existing objects and never allocates.
+    var LOCAL_LIGHT_CANDIDATES = 6;
+    var localLights = [];
+    var localRig = {
+      entry: null, lamp: null, pipe: null, core: null, boss: null, exit: null
+    };
+
+    function localLightScore(a, b) { return b.score - a.score; }
+
+    function registerLocalLight(key, opts) {
+      if (localLights.length >= LOCAL_LIGHT_CANDIDATES) return null;
+      var light = new THREE.PointLight(opts.hex, 0, opts.range);
+      light.position.set(opts.x, opts.y, opts.z);
+      light.visible = false;
+      scene.add(light);
+      var entry = {
+        key: key,
+        light: light,
+        baseIntensity: opts.intensity,
+        baseRange: opts.range,
+        priority: opts.priority || 1,
+        enabled: opts.enabled !== false,
+        score: 0,
+        phase: arand(0, Math.PI * 2)
+      };
+      localLights.push(entry);
+      localRig[key] = entry;
+      return entry;
+    }
+
+    function buildLocalLightRig() {
+      // Entry is keyed cold cyan; the warm maintenance lamps remain as warm
+      // accents, so the threshold reads cold without losing the V1 fixtures.
+      registerLocalLight('entry', {
+        x: 0, y: 3.55, z: 9.8, hex: 0x8fe6ff,
+        intensity: 1.0, range: 8.6, priority: 1.6
+      });
+      registerLocalLight('lamp', {
+        x: 0, y: 3.65, z: 12.7, hex: 0xffa95c,
+        intensity: 0.85, range: 7.5, priority: 1.15
+      });
+      // Oxidised pipe bay: warm orange spill against the cold corridor.
+      registerLocalLight('pipe', {
+        x: 18.2, y: 2.5, z: 1.6, hex: 0xff5f2e,
+        intensity: 0.9, range: 7.4, priority: 1.45
+      });
+      // Central energy core, always on and gently pulsing.
+      registerLocalLight('core', {
+        x: 0, y: 2.55, z: -2.5, hex: 0x4fd8ff,
+        intensity: 1.1, range: 8.4, priority: 1.85
+      });
+      // Boss core light is created once and follows the active core.
+      registerLocalLight('boss', {
+        x: 0, y: 2.5, z: -9, hex: 0xff4fb8,
+        intensity: 0, range: 10.2, priority: 3.0, enabled: false
+      });
+      // Exit gate is red while locked and green once the boss is down.
+      registerLocalLight('exit', {
+        x: 0, y: 2.35, z: -16.05, hex: 0xff4d6d,
+        intensity: 0.85, range: 7.2, priority: 2.0
+      });
+    }
+
+    function updateLocalLightRig() {
+      var i, entry;
+      var max = Math.min(THREE.MAX_LOCAL_LIGHTS || 5, localLights.length);
+      var px = camera.position.x;
+      var py = camera.position.y;
+      var pz = camera.position.z;
+
+      entry = localRig.entry;
+      if (entry) {
+        entry.light.intensity = entry.baseIntensity *
+          (0.9 + 0.1 * Math.sin(worldClock * 1.1 + entry.phase));
+      }
+      entry = localRig.lamp;
+      if (entry) {
+        entry.light.intensity = entry.baseIntensity *
+          (0.86 + 0.14 * Math.sin(worldClock * 0.8 + entry.phase));
+      }
+      entry = localRig.pipe;
+      if (entry) {
+        entry.light.intensity = entry.baseIntensity *
+          (0.82 + 0.18 * Math.sin(worldClock * 0.65 + entry.phase));
+      }
+      entry = localRig.core;
+      if (entry) {
+        var coreAlert = arenaMood && arenaMood.phase === 3;
+        entry.light.color.setHex(coreAlert ? 0xff6a55 : 0x4fd8ff);
+        entry.light.intensity = entry.baseIntensity *
+          (0.9 + 0.1 * Math.sin(worldClock * 2.0)) * (coreAlert ? 1.15 : 1);
+      }
+
+      var bossEntry = localRig.boss;
+      // While a boss laser is charging/firing, its own light is borrowed as a
+      // travelling bounce on the nearest point of the beam.  This produces
+      // strong source-to-surface colour pollution without adding a seventh
+      // candidate light or exceeding the five active local-light slots.
+      var beamHex = 0;
+      var beamX = 0;
+      var beamY = 1.45;
+      var beamZ = 0;
+      var beamIntensity = 0;
+      for (i = 0; i < lasers.length; i++) {
+        var beam = lasers[i];
+        if (beam.t < beam.warn * 0.55 || beam.t >= beam.warn + beam.active) continue;
+        var charge = beam.t < beam.warn
+          ? (beam.t - beam.warn * 0.55) / (beam.warn * 0.45)
+          : 1.35;
+        if (beam.axis === 'x') {
+          beamX = clamp(player.pos.x, ARENA.minX + 1, ARENA.maxX - 1);
+          beamZ = beam.coord;
+        } else {
+          beamX = beam.coord;
+          beamZ = clamp(player.pos.z, ARENA.minZ + 1, ARENA.maxZ - 1);
+        }
+        beamHex = laserPaletteHex(beam.phase);
+        beamIntensity = 1.15 + charge * 0.75;
+        break;
+      }
+
+      if (bossEntry) {
+        if (beamHex) {
+          bossEntry.enabled = true;
+          bossEntry.light.position.set(beamX, beamY, beamZ);
+          bossEntry.light.color.setHex(beamHex);
+          bossEntry.light.distance = 11.2;
+          bossEntry.light.intensity = beamIntensity;
+        } else if (boss && boss.alive) {
+          bossEntry.enabled = true;
+          bossEntry.light.position.copy(boss.pos);
+          var bossHex = boss.phase === 3 ? 0xff5048 :
+            (boss.phase === 2 ? 0x9b6bff : 0xff4fb8);
+          if (boss.shield > 0) bossHex = C.cyan;
+          if (boss.flash > 0) bossHex = 0xffffff;
+          bossEntry.light.color.setHex(bossHex);
+          bossEntry.light.distance = boss.phase === 3 ? 11.5 : 10.2;
+          bossEntry.light.intensity = 1.2 + (boss.phase === 3 ? 0.25 : 0) +
+            (boss.exposed > 0 ? 0.3 : 0) + (boss.flash > 0 ? 0.25 : 0);
+        } else {
+          bossEntry.enabled = false;
+          bossEntry.light.intensity = 0;
+        }
+      }
+
+      var exitEntry = localRig.exit;
+      if (exitEntry) {
+        exitEntry.light.color.setHex(exit.unlocked ? C.green : C.red);
+        exitEntry.enabled = true;
+        exitEntry.light.intensity = (exit.unlocked ? 1.15 : 0.8) +
+          Math.sin(worldClock * 2.3) * 0.08;
+      }
+
+      // Score = priority falloff by distance.  Sorting this six-element array
+      // in place keeps the pool bounded and allocation-free.
+      for (i = 0; i < localLights.length; i++) {
+        entry = localLights[i];
+        if (!entry.enabled) {
+          entry.score = -Infinity;
+          entry.light.visible = false;
+          continue;
+        }
+        var dx = entry.light.position.x - px;
+        var dy = entry.light.position.y - py;
+        var dz = entry.light.position.z - pz;
+        var d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        entry.score = entry.priority * 2.4 / (d + 2.0);
+      }
+      localLights.sort(localLightScore);
+      for (i = 0; i < localLights.length; i++) {
+        localLights[i].light.visible = i < max && localLights[i].enabled;
+      }
+    }
+
+    /* ------------------------------------------------- cinematic volumes */
+    // Volumetric-looking shafts are ordinary low-poly additive geometry.  Each
+    // entry owns an outer, wide layer and a hot inner layer; the pools are
+    // built once here and only opacity/colour/transform change per frame.
+    var VOLUME_BEAM_LIMIT = 20;
+    var volumetricBeams = [];
+    var volumeFx = {
+      lampBeams: [],
+      pipeBeams: [],
+      entryBeam: null,
+      coreBeam: null,
+      bossCore: null,
+      bossPylons: [],
+      exitBeam: null,
+      exitSpill: null
+    };
+
+    function volumeMaterial(hex, opacity) {
+      return matBasic(hex, {
+        transparent: true,
+        opacity: opacity,
+        blending: 'additive',
+        depthWrite: false,
+        fog: false
+      });
+    }
+
+    function addVolumeBeam(opts) {
+      if (volumetricBeams.length >= VOLUME_BEAM_LIMIT) return null;
+      var group = new THREE.Group();
+      group.position.set(opts.x || 0, opts.y || 0, opts.z || 0);
+      if (opts.rotationX) group.rotation.x = opts.rotationX;
+      if (opts.rotationY) group.rotation.y = opts.rotationY;
+      if (opts.rotationZ) group.rotation.z = opts.rotationZ;
+
+      var geo = opts.shape === 'box' ? G.box : (opts.shape === 'cylinder' ? G.cylinder : G.cone);
+      var outerMat = volumeMaterial(opts.hex, opts.opacity);
+      var coreMat = volumeMaterial(opts.coreHex === undefined ? 0xffffff : opts.coreHex,
+        opts.coreOpacity === undefined ? opts.opacity * 0.7 : opts.coreOpacity);
+      var outer = new THREE.Mesh(geo, outerMat);
+      var core = new THREE.Mesh(geo, coreMat);
+      var radius = opts.radius || 1;
+      var coreRadius = opts.coreRadius === undefined ? radius * 0.5 : opts.coreRadius;
+      var height = opts.height || 4;
+
+      if (opts.shape === 'box') {
+        outer.scale.set(opts.width || 1, height, opts.depth || 0.2);
+        core.scale.set((opts.width || 1) * 0.78, height * 0.94, (opts.depth || 0.2) * 1.6);
+      } else {
+        outer.scale.set(radius, height, radius);
+        core.scale.set(coreRadius, height * 0.98, coreRadius);
+      }
+      outer.renderOrder = opts.order || 2;
+      core.renderOrder = (opts.order || 2) + 1;
+      group.add(outer);
+      group.add(core);
+      scene.add(group);
+
+      var entry = {
+        group: group,
+        outer: outer,
+        core: core,
+        outerMat: outerMat,
+        coreMat: coreMat,
+        baseOuter: opts.opacity,
+        baseCore: opts.coreOpacity === undefined ? opts.opacity * 0.7 : opts.coreOpacity,
+        phase: arand(0, Math.PI * 2),
+        speed: opts.speed || 1.2,
+        kind: opts.kind || 'static',
+        pulseScale: opts.pulseScale || 0
+      };
+      volumetricBeams.push(entry);
+      return entry;
+    }
+
+    function buildCinematicVolumes() {
+      var lamps = [
+        [-14, -12.6, 0x57ddff, 0xd6fbff],
+        [14, -12.6, 0x57ddff, 0xd6fbff],
+        [-14, 1.8, 0x8defff, 0xe3ffff],
+        [14, 1.8, 0x8defff, 0xe3ffff],
+        [0, 12.8, 0xffb153, 0xffefd0],
+        [0, 5.2, 0x57ddff, 0xd6fbff],
+        [-13.5, 12.7, 0xffb153, 0xffefd0],
+        [13.5, 12.7, 0xffb153, 0xffefd0]
+      ];
+      var i;
+      for (i = 0; i < lamps.length; i++) {
+        var lampBeam = addVolumeBeam({
+          shape: 'cone', x: lamps[i][0], y: 2.02, z: lamps[i][1],
+          radius: 1.42, coreRadius: 0.6, height: 4.04,
+          hex: lamps[i][2], coreHex: lamps[i][3],
+          opacity: 0.055, coreOpacity: 0.085,
+          speed: 0.7 + i * 0.07, kind: 'lamp'
+        });
+        if (lampBeam) volumeFx.lampBeams.push(lampBeam);
+      }
+
+      // Oxidised pipe-bay contamination.
+      volumeFx.pipeBeams.push(addVolumeBeam({
+        shape: 'cone', x: 18.2, y: 1.9, z: 1.6,
+        radius: 1.2, coreRadius: 0.5, height: 3.8,
+        hex: 0xff5f2e, coreHex: 0xffc39a,
+        opacity: 0.045, coreOpacity: 0.07, speed: 0.55, kind: 'pipe'
+      }));
+      volumeFx.pipeBeams.push(addVolumeBeam({
+        shape: 'cone', x: -18.2, y: 1.9, z: 8.2,
+        radius: 1.05, coreRadius: 0.44, height: 3.8,
+        hex: 0xff5f2e, coreHex: 0xffc39a,
+        opacity: 0.04, coreOpacity: 0.06, speed: 0.48, kind: 'pipe'
+      }));
+
+      // Cold threshold curtain at the entry.
+      volumeFx.entryBeam = addVolumeBeam({
+        shape: 'box', x: 0, y: 1.7, z: 10.12,
+        width: 9.6, height: 3.4, depth: 0.3,
+        hex: 0x8fe6ff, coreHex: 0xe8ffff,
+        opacity: 0.03, coreOpacity: 0.045, speed: 1.1, kind: 'entry'
+      });
+
+      // Central energy column.
+      volumeFx.coreBeam = addVolumeBeam({
+        shape: 'cylinder', x: 0, y: 2.2, z: -2.5,
+        radius: 0.62, coreRadius: 0.24, height: 4.4,
+        hex: 0x4fd8ff, coreHex: 0xd6fbff,
+        opacity: 0.055, coreOpacity: 0.1, speed: 2.0, kind: 'core'
+      });
+
+      // Boss pylon columns; colour is driven by the arena phase.
+      for (i = -1; i <= 1; i += 2) {
+        var pylonBeam = addVolumeBeam({
+          shape: 'cylinder', x: i * 18.85, y: 2.1, z: -10.8,
+          radius: 0.56, coreRadius: 0.22, height: 4.2,
+          hex: 0x3ec8dd, coreHex: 0xd9ffff,
+          opacity: 0.06, coreOpacity: 0.1, speed: 2.6, kind: 'pylon'
+        });
+        if (pylonBeam) volumeFx.bossPylons.push(pylonBeam);
+      }
+
+      // A floor-anchored column that follows the active boss core horizontally.
+      volumeFx.bossCore = addVolumeBeam({
+        shape: 'cylinder', x: 0, y: 2.1, z: -9,
+        radius: 1.48, coreRadius: 0.56, height: 4.2,
+        hex: 0xff4fb8, coreHex: 0xffe3f4,
+        opacity: 0.045, coreOpacity: 0.08,
+        speed: 3.2, kind: 'bossCore', pulseScale: 1
+      });
+      if (volumeFx.bossCore) volumeFx.bossCore.group.visible = false;
+
+      // Exit portal volume plus a cone of spill into the arena.
+      volumeFx.exitBeam = addVolumeBeam({
+        shape: 'box', x: 0, y: 1.52, z: -15.86,
+        width: 3.5, height: 2.85, depth: 0.18,
+        hex: 0xff4d6d, coreHex: 0xffd9de,
+        opacity: 0.05, coreOpacity: 0.09, speed: 1.8, kind: 'exit'
+      });
+      volumeFx.exitSpill = addVolumeBeam({
+        shape: 'cone', x: 0, y: 1.55, z: -14.6, rotationX: -Math.PI / 2,
+        radius: 1.5, coreRadius: 0.6, height: 2.6,
+        hex: 0xff4d6d, coreHex: 0xffd9de,
+        opacity: 0.032, coreOpacity: 0.055, speed: 1.6, kind: 'exit'
+      });
+    }
+
+    function updateCinematicVolumes() {
+      var i, e, pulse;
+      for (i = 0; i < volumetricBeams.length; i++) {
+        e = volumetricBeams[i];
+        pulse = 0.5 + 0.5 * Math.sin(worldClock * e.speed + e.phase);
+        e.outerMat.opacity = e.baseOuter * (0.78 + 0.22 * pulse);
+        e.coreMat.opacity = e.baseCore * (0.82 + 0.18 * pulse);
+
+        if (e.kind === 'pylon' && arenaMood) {
+          e.outerMat.color.copy(arenaMood.pylonMat.color);
+          e.coreMat.color.copy(arenaMood.beaconMat.color);
+        } else if (e.kind === 'exit') {
+          var exitHex = exit.unlocked ? C.green : C.red;
+          e.outerMat.color.setHex(exitHex);
+          e.coreMat.color.setHex(exit.unlocked ? 0xd8ffe9 : 0xffd9de);
+        } else if (e.kind === 'core') {
+          var coreAlert = arenaMood && arenaMood.phase === 3;
+          e.outerMat.color.setHex(coreAlert ? 0xff6a55 : 0x4fd8ff);
+          e.coreMat.color.setHex(coreAlert ? 0xffd0c2 : 0xd6fbff);
+        } else if (e.kind === 'bossCore') {
+          if (boss && boss.alive) {
+            e.group.visible = true;
+            e.group.position.x = boss.pos.x;
+            e.group.position.z = boss.pos.z;
+            var bossHex = boss.phase === 3 ? 0xff4d6d :
+              (boss.phase === 2 ? 0x9b6bff : 0xff4fb8);
+            if (boss.shield > 0) bossHex = C.cyan;
+            if (boss.flash > 0) bossHex = 0xffffff;
+            e.outerMat.color.setHex(bossHex);
+            e.coreMat.color.setHex(boss.phase === 3 ? 0xffd9d4 : 0xffe3f4);
+            var bossPulse = 1 + (e.pulseScale ? (pulse - 0.5) * 0.08 : 0);
+            e.group.scale.set(bossPulse, 1, bossPulse);
+          } else {
+            e.group.visible = false;
+          }
+        }
+      }
+    }
+
+    /* ---------------------------------------- dynamic pseudo-reflection pool */
+    var REFLECTION_STRIP_LIMIT = 16;
+    var reflectionStrips = [];
+
+    function buildReflectionStripPool() {
+      for (var i = 0; i < REFLECTION_STRIP_LIMIT; i++) {
+        var mat = matBasic(0xffffff, {
+          transparent: true, opacity: 0, blending: 'additive',
+          depthWrite: false, fog: false
+        });
+        var mesh = new THREE.Mesh(G.box, mat);
+        mesh.position.y = 0.074;
+        mesh.visible = false;
+        mesh.renderOrder = 8;
+        scene.add(mesh);
+        reflectionStrips.push({ mesh: mesh, mat: mat });
+      }
+    }
+
+    function resetReflectionStrips() {
+      for (var i = 0; i < reflectionStrips.length; i++) {
+        reflectionStrips[i].mesh.visible = false;
+      }
+    }
+
+    function addReflectionStrip(x, z, yaw, width, length, hex, opacity) {
+      for (var i = 0; i < reflectionStrips.length; i++) {
+        var s = reflectionStrips[i];
+        if (s.mesh.visible) continue;
+        s.mesh.visible = true;
+        s.mesh.position.set(x, 0.074, z);
+        s.mesh.rotation.y = yaw;
+        s.mesh.scale.set(width, 0.006, length);
+        s.mat.color.setHex(hex);
+        s.mat.opacity = opacity;
+        return;
+      }
+    }
+
+    function laserPaletteHex(phase) {
+      return phase === 3 ? 0xff3d32 : (phase === 2 ? 0xff4fb8 : 0xff4d6d);
+    }
+
+    function updateReflectionStrips() {
+      resetReflectionStrips();
+      var pulse = 0.5 + 0.5 * Math.sin(worldClock * 3.6);
+      var i, k, ang, len, x, z;
+
+      if (boss && boss.alive) {
+        var bossHex = boss.phase === 3 ? 0xff4d6d :
+          (boss.phase === 2 ? 0x9b6bff : 0xff4fb8);
+        if (boss.shield > 0) bossHex = C.cyan;
+        for (k = 0; k < 4; k++) {
+          ang = k * Math.PI / 2 + boss.t * 0.08;
+          len = 5.2 + pulse * 1.6;
+          x = boss.pos.x + Math.sin(ang) * (len * 0.5 + 0.9);
+          z = boss.pos.z + Math.cos(ang) * (len * 0.5 + 0.9);
+          addReflectionStrip(x, z, ang, 0.42 + pulse * 0.12, len,
+            bossHex, 0.06 + pulse * 0.07);
+        }
+      }
+
+      for (i = 0; i < lasers.length; i++) {
+        var l = lasers[i];
+        if (l.t < l.warn * 0.55) continue;
+        var hex = laserPaletteHex(l.phase);
+        var baseX = player.pos.x;
+        var baseZ = player.pos.z;
+        for (k = -1; k <= 1; k++) {
+          if (l.axis === 'x') {
+            addReflectionStrip(clamp(baseX + k * 0.4, ARENA.minX + 1, ARENA.maxX - 1),
+              l.coord + k * 0.55, Math.PI / 2, 0.2 + pulse * 0.1, 10.5,
+              hex, 0.08 + pulse * 0.1);
+          } else {
+            addReflectionStrip(l.coord + k * 0.55,
+              clamp(baseZ + k * 0.4, ARENA.minZ + 1, ARENA.maxZ - 1),
+              0, 0.2 + pulse * 0.1, 10.5,
+              hex, 0.08 + pulse * 0.1);
+          }
+        }
+      }
+
+      var exitHex = exit.unlocked ? C.green : C.red;
+      addReflectionStrip(-1.12, -14.0, 0, 0.16, 3.8, exitHex, 0.055 + pulse * 0.045);
+      addReflectionStrip(0, -13.7, 0, 0.2, 4.4, exitHex, 0.07 + pulse * 0.055);
+      addReflectionStrip(1.12, -14.0, 0, 0.16, 3.8, exitHex, 0.055 + pulse * 0.045);
+    }
+
+    /* ------------------------------------------------------------ ambient */
     var motes = [];
     function buildAmbientMotes() {
       var moteGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -2033,6 +2804,120 @@
       }
     }
 
+    /* ------------------------------------------------- dynamic contact shadows */
+    // A fixed, shared-geometry pool grounds the mobile threats.  Each slot owns
+    // two reused discs: a broad soft footprint and a darker directional core
+    // offset away from the directional light.  Slots are acquired on spawn and
+    // released on kill/reset; nothing is constructed in the frame loop.
+    var CONTACT_SHADOW_LIMIT = 12;
+    var contactShadows = [];
+    // The sun sits at (-0.45, 1, 0.3), so ground shadows stretch toward +x/-z.
+    var shadowFlat = Math.sqrt(sun.position.x * sun.position.x + sun.position.z * sun.position.z) || 1;
+    var SHADOW_DIR_X = -sun.position.x / shadowFlat;
+    var SHADOW_DIR_Z = -sun.position.z / shadowFlat;
+    var SHADOW_YAW = Math.atan2(SHADOW_DIR_X, SHADOW_DIR_Z);
+
+    function buildContactShadowPool() {
+      for (var i = 0; i < CONTACT_SHADOW_LIMIT; i++) {
+        var softMat = matBasic(0x000000, {
+          transparent: true, opacity: 0.18, depthWrite: false, fog: false
+        });
+        var coreMat = matBasic(0x000000, {
+          transparent: true, opacity: 0.26, depthWrite: false, fog: false
+        });
+        var soft = new THREE.Mesh(G.circle, softMat);
+        soft.position.set(0, 0.057, 0);
+        soft.rotation.y = SHADOW_YAW;
+        soft.visible = false;
+        soft.renderOrder = 6;
+        scene.add(soft);
+        var core = new THREE.Mesh(G.circle, coreMat);
+        core.position.set(0, 0.059, 0);
+        core.rotation.y = SHADOW_YAW;
+        core.visible = false;
+        core.renderOrder = 7;
+        scene.add(core);
+        contactShadows.push({
+          soft: soft,
+          softMat: softMat,
+          core: core,
+          coreMat: coreMat,
+          owner: null,
+          radius: 1,
+          base: 0.24,
+          phase: i * 0.7
+        });
+      }
+    }
+
+    function acquireContactShadow(owner, radius, opacity) {
+      var slot = null;
+      for (var i = 0; i < contactShadows.length; i++) {
+        if (!contactShadows[i].owner) { slot = contactShadows[i]; break; }
+      }
+      if (!slot) {
+        slot = contactShadows[0];
+        if (slot.owner && slot.owner.shadow === slot) slot.owner.shadow = null;
+      }
+      slot.owner = owner;
+      slot.radius = radius;
+      slot.base = opacity;
+      slot.soft.visible = true;
+      slot.core.visible = true;
+      slot.soft.scale.set(radius, 1, radius);
+      slot.core.scale.set(radius, 1, radius);
+      slot.softMat.opacity = opacity * 0.75;
+      slot.coreMat.opacity = opacity;
+      return slot;
+    }
+
+    function releaseContactShadow(shadow) {
+      if (!shadow) return;
+      shadow.owner = null;
+      shadow.soft.visible = false;
+      shadow.core.visible = false;
+    }
+
+    function releaseAllContactShadows() {
+      for (var i = 0; i < contactShadows.length; i++) {
+        contactShadows[i].owner = null;
+        contactShadows[i].soft.visible = false;
+        contactShadows[i].core.visible = false;
+      }
+    }
+
+    function updateContactShadows() {
+      for (var i = 0; i < contactShadows.length; i++) {
+        var s = contactShadows[i];
+        var o = s.owner;
+        if (!o || o.dead || !o.pos) {
+          if (s.soft.visible) s.soft.visible = false;
+          if (s.core.visible) s.core.visible = false;
+          s.owner = null;
+          continue;
+        }
+        var height = o.pos.y;
+        var lift = o.isBoss ? 1.05 : (o.type === 'sentinel' ? 0.86 : 1);
+        var breathe = 0.94 + 0.06 * Math.sin(worldClock * 2.2 + s.phase);
+        var r = s.radius * lift * breathe;
+        var opacity = s.base * Math.max(0.55, 1 - height * 0.08);
+
+        // Broad footprint directly under the body.
+        s.soft.position.set(o.pos.x, 0.057, o.pos.z);
+        s.soft.scale.set(r * 1.18, 1, r * 1.02);
+        s.softMat.opacity = opacity * 0.72;
+
+        // Darker offset core, elongated along the shadow direction.
+        s.core.position.set(
+          o.pos.x + SHADOW_DIR_X * r * 0.26,
+          0.059,
+          o.pos.z + SHADOW_DIR_Z * r * 0.26
+        );
+        s.core.scale.set(r * 0.8, 1, r * 1.08);
+        s.coreMat.opacity = opacity * 1.12;
+      }
+    }
+
     /* ------------------------------------------------------------ viewmodel */
 
     var viewRoot = new THREE.Group();
@@ -2043,18 +2928,53 @@
     muzzle.position.set(0, 0.03, -0.72);
     viewRoot.add(muzzle);
 
-    var muzzleFlash = new THREE.Mesh(G.sphere, matBasic(0xffe1a1, {
-      transparent: true,
-      opacity: 0.9,
-      blending: 'additive',
-      depthTest: false,
-      depthWrite: false
-    }));
-    muzzleFlash.scale.set(0.13, 0.13, 0.13);
+    // Layered first-person muzzle burst: white-hot core, warm halo, crossed
+    // star flare and a camera-facing ring.  Built once; only scale/visibility
+    // changes while firing.
+    var muzzleFlash = new THREE.Group();
     muzzleFlash.position.copy(muzzle.position);
     muzzleFlash.visible = false;
-    muzzleFlash.renderOrder = 960;
     viewRoot.add(muzzleFlash);
+
+    var muzzleCoreMat = matBasic(0xffffff, {
+      transparent: true, opacity: 0.98, blending: 'additive',
+      depthTest: false, depthWrite: false
+    });
+    var muzzleHaloMat = matBasic(0xffc46a, {
+      transparent: true, opacity: 0.22, blending: 'additive',
+      depthTest: false, depthWrite: false
+    });
+    var muzzleStarMat = matBasic(0xfff0c0, {
+      transparent: true, opacity: 0.85, blending: 'additive',
+      depthTest: false, depthWrite: false
+    });
+    var muzzleRingMat = matBasic(0xffd27a, {
+      transparent: true, opacity: 0.38, blending: 'additive',
+      depthTest: false, depthWrite: false
+    });
+    var muzzleCore = new THREE.Mesh(G.lowSphere, muzzleCoreMat);
+    muzzleCore.scale.setScalar(0.1);
+    var muzzleHalo = new THREE.Mesh(G.sphere, muzzleHaloMat);
+    muzzleHalo.scale.setScalar(0.24);
+    var muzzleStarH = new THREE.Mesh(G.box, muzzleStarMat);
+    muzzleStarH.scale.set(0.46, 0.032, 0.032);
+    muzzleStarH.rotation.z = Math.PI / 4;
+    var muzzleStarV = new THREE.Mesh(G.box, muzzleStarMat);
+    muzzleStarV.scale.set(0.032, 0.46, 0.032);
+    muzzleStarV.rotation.z = -Math.PI / 4;
+    var muzzleRing = new THREE.Mesh(G.torus, muzzleRingMat);
+    muzzleRing.scale.setScalar(0.2);
+    muzzleRing.rotation.x = Math.PI / 2;
+    muzzleCore.renderOrder = 962;
+    muzzleHalo.renderOrder = 961;
+    muzzleStarH.renderOrder = 963;
+    muzzleStarV.renderOrder = 963;
+    muzzleRing.renderOrder = 960;
+    muzzleFlash.add(muzzleCore);
+    muzzleFlash.add(muzzleHalo);
+    muzzleFlash.add(muzzleStarH);
+    muzzleFlash.add(muzzleStarV);
+    muzzleFlash.add(muzzleRing);
 
     function vmMat(hex) {
       return matBasic(hex, { depthTest: false, depthWrite: false });
@@ -2603,12 +3523,10 @@
     var bullets = [];
     var deflects = [];
     var missiles = [];
-    var tracers = [];
     var particles = [];
     var telegraphs = [];
     var shockwaves = [];
     var lasers = [];
-    var rings = [];
     var pending = [];
 
     var boss = null;
@@ -2814,11 +3732,32 @@
     var lastDryToast = -10;
     var bossDefeated = false;
 
-    function makeParticleMesh() {
-      var mesh = new THREE.Mesh(G.box, matBasic(0xffffff, {
-        transparent: true, opacity: 1, blending: 'additive',
+    var BULLET_TRAIL_LIMIT = 32;
+    var SPARK_LIMIT = 48;
+
+    var ringFxPool = [];
+    var tracerFxPool = [];
+    var bulletFxPool = [];
+    var bulletTrailPool = [];
+    var deflectFxPool = [];
+    var missileFxPool = [];
+    var telegraphFxPool = [];
+    var laserFxPool = [];
+    var shockwaveFxPool = [];
+    var sparkFxPool = [];
+
+    var fxTmpDir = new THREE.Vector3();
+    var fxTmpVec = new THREE.Vector3();
+
+    function fxAdditive(hex, opacity) {
+      return matBasic(hex, {
+        transparent: true, opacity: opacity, blending: 'additive',
         depthWrite: false, fog: false
-      }));
+      });
+    }
+
+    function makeParticleMesh() {
+      var mesh = new THREE.Mesh(G.box, fxAdditive(0xffffff, 1));
       mesh.visible = false;
       scene.add(mesh);
       return mesh;
@@ -2833,24 +3772,28 @@
       });
     }
 
+    function buildParticlePool() {
+      for (var i = 0; i < MAX.particles; i++) {
+        particles.push({
+          mesh: makeParticleMesh(),
+          alive: false,
+          vel: new THREE.Vector3(),
+          ttl: 0,
+          max: 1,
+          size: 0.03
+        });
+      }
+    }
+
     function spawnParticles(pos, color, count, speed, life, size) {
       for (var i = 0; i < count; i++) {
         var slot = null;
         for (var j = 0; j < particles.length; j++) {
           if (!particles[j].alive) { slot = particles[j]; break; }
         }
-        if (!slot) {
-          if (particles.length >= MAX.particles) return;
-          slot = {
-            mesh: makeParticleMesh(),
-            alive: false,
-            vel: new THREE.Vector3(),
-            ttl: 0,
-            max: 1,
-            size: size
-          };
-          particles.push(slot);
-        }
+        // The pool is prewarmed to MAX.particles, so a full pool simply drops
+        // the extra spark instead of constructing anything inside the loop.
+        if (!slot) return;
         slot.alive = true;
         slot.ttl = slot.max = life * rnd(0.65, 1.25);
         slot.size = size * rnd(0.55, 1.25);
@@ -2884,106 +3827,506 @@
       }
     }
 
+    /* --------------------------------------------------------- hit sparks */
+
+    function buildSparkPool() {
+      for (var i = 0; i < SPARK_LIMIT; i++) {
+        var mat = fxAdditive(0xffffff, 1);
+        var mesh = new THREE.Mesh(G.box, mat);
+        mesh.visible = false;
+        mesh.renderOrder = 952;
+        scene.add(mesh);
+        sparkFxPool.push({
+          mesh: mesh,
+          mat: mat,
+          alive: false,
+          vel: new THREE.Vector3(),
+          ttl: 0,
+          max: 1,
+          size: 0.02
+        });
+      }
+    }
+
+    function spawnSparks(pos, color, count, speed, power) {
+      for (var i = 0; i < count; i++) {
+        var slot = null;
+        for (var j = 0; j < sparkFxPool.length; j++) {
+          if (!sparkFxPool[j].alive) { slot = sparkFxPool[j]; break; }
+        }
+        if (!slot) return;
+        slot.alive = true;
+        slot.ttl = slot.max = rnd(0.18, 0.38);
+        slot.size = rnd(0.012, 0.028) * (0.8 + power * 0.25);
+        slot.mesh.visible = true;
+        slot.mesh.position.copy(pos);
+        slot.mesh.material.color.setHex(color);
+        slot.mesh.material.opacity = 1;
+        slot.mesh.scale.set(slot.size, slot.size, slot.size * rnd(1.5, 3.4));
+        slot.vel.set(rnd(-1, 1), rnd(-0.2, 1.35), rnd(-1, 1));
+        if (slot.vel.lengthSq() < 1e-5) slot.vel.set(0, 1, 0);
+        slot.vel.normalize().multiplyScalar(speed * rnd(0.45, 1.2));
+      }
+    }
+
+    function updateSparks(dt) {
+      for (var i = 0; i < sparkFxPool.length; i++) {
+        var s = sparkFxPool[i];
+        if (!s.alive) continue;
+        s.ttl -= dt;
+        if (s.ttl <= 0) {
+          s.alive = false;
+          s.mesh.visible = false;
+          continue;
+        }
+        s.vel.y -= 7.5 * dt;
+        s.vel.multiplyScalar(Math.max(0, 1 - 2.4 * dt));
+        s.mesh.position.addScaledVector(s.vel, dt);
+        fxTmpDir.copy(s.vel);
+        if (fxTmpDir.lengthSq() > 1e-5) {
+          fxTmpDir.normalize();
+          s.mesh.quaternion.setFromUnitVectors(ZAXIS, fxTmpDir);
+        }
+        var k = s.ttl / s.max;
+        s.mat.opacity = Math.min(1, k * 1.4);
+        s.mesh.scale.set(s.size, s.size, s.size * (1.4 + s.vel.length() * 0.05));
+      }
+    }
+
+    function spawnImpactFx(point, color, power) {
+      var p = power || 1;
+      spawnSparks(point, color, 2 + Math.floor(p * 3), 2.6 + p * 2.2, p);
+      if (p > 0.9) spawnRingFx(point, 0.55 + p * 0.45, color, 0.2 + p * 0.05, point.y);
+    }
+
+    /* --------------------------------------------------------------- rings */
+
+    function buildRingPool() {
+      for (var i = 0; i < MAX.rings; i++) {
+        var mat = fxAdditive(0xffffff, 0.9);
+        var mesh = new THREE.Mesh(G.ring, mat);
+        mesh.visible = false;
+        mesh.renderOrder = 6;
+        scene.add(mesh);
+        ringFxPool.push({ mesh: mesh, mat: mat, alive: false, t: 0, dur: 1, maxR: 1 });
+      }
+    }
+
     function spawnRingFx(pos, maxR, color, duration, y) {
-      if (rings.length >= MAX.rings) return;
-      var mat = matBasic(color, {
-        transparent: true, opacity: 0.9, blending: 'additive',
-        depthWrite: false, fog: false
-      });
-      var mesh = new THREE.Mesh(G.ring, mat);
-      mesh.position.set(pos.x, y === undefined ? 0.06 : y, pos.z);
-      mesh.scale.set(0.3, 1, 0.3);
-      scene.add(mesh);
-      rings.push({ mesh: mesh, mat: mat, t: 0, dur: duration, maxR: maxR });
+      var slot = null;
+      for (var i = 0; i < ringFxPool.length; i++) {
+        if (!ringFxPool[i].alive) { slot = ringFxPool[i]; break; }
+      }
+      if (!slot) return;
+      slot.alive = true;
+      slot.t = 0;
+      slot.dur = duration;
+      slot.maxR = maxR;
+      slot.mat.color.setHex(color);
+      slot.mat.opacity = 0.9;
+      slot.mesh.visible = true;
+      slot.mesh.position.set(pos.x, y === undefined ? 0.06 : y, pos.z);
+      slot.mesh.rotation.set(0, 0, 0);
+      slot.mesh.scale.set(0.3, 1, 0.3);
     }
 
     function updateRings(dt) {
-      for (var i = rings.length - 1; i >= 0; i--) {
-        var r = rings[i];
+      for (var i = 0; i < ringFxPool.length; i++) {
+        var r = ringFxPool[i];
+        if (!r.alive) continue;
         r.t += dt;
         var k = clamp(r.t / r.dur, 0, 1);
         var radius = 0.4 + (r.maxR - 0.4) * (1 - Math.pow(1 - k, 2));
         r.mesh.scale.set(radius, 1, radius);
         r.mat.opacity = (1 - k) * 0.85;
         if (k >= 1) {
-          scene.remove(r.mesh);
-          rings.splice(i, 1);
+          r.alive = false;
+          r.mesh.visible = false;
         }
       }
     }
 
+    /* ---------------------------------------------------------- telegraphs */
+
+    function buildTelegraphPool() {
+      for (var i = 0; i < MAX.telegraphs; i++) {
+        var group = new THREE.Group();
+        var groundMat = fxAdditive(0xffffff, 0.3);
+        var ringMat = fxAdditive(0xffffff, 0.45);
+        var columnMat = fxAdditive(0xffffff, 0.1);
+        var ground = new THREE.Mesh(G.circle, groundMat);
+        ground.position.y = 0.045;
+        ground.renderOrder = 7;
+        var ring = new THREE.Mesh(G.ring, ringMat);
+        ring.position.y = 0.07;
+        ring.renderOrder = 8;
+        var column = new THREE.Mesh(G.cylinder, columnMat);
+        column.position.y = 2.0;
+        column.scale.set(0.09, 4.0, 0.09);
+        column.renderOrder = 5;
+        group.add(ground);
+        group.add(ring);
+        group.add(column);
+        group.visible = false;
+        scene.add(group);
+        telegraphFxPool.push({
+          group: group,
+          ground: ground,
+          groundMat: groundMat,
+          ring: ring,
+          ringMat: ringMat,
+          column: column,
+          columnMat: columnMat,
+          active: false,
+          x: 0, z: 0, radius: 1, t: 0, delay: 1
+        });
+      }
+    }
+
     function spawnTelegraph(x, z, radius, delay, color) {
-      if (telegraphs.length >= MAX.telegraphs) return null;
-      var mat = matBasic(color, {
-        transparent: true, opacity: 0.3, blending: 'additive',
-        depthWrite: false, fog: false
-      });
-      var mesh = new THREE.Mesh(G.circle, mat);
-      mesh.position.set(x, 0.045, z);
-      mesh.scale.set(radius, 1, radius);
-      scene.add(mesh);
-      var t = { mesh: mesh, mat: mat, x: x, z: z, radius: radius, t: 0, delay: delay };
-      telegraphs.push(t);
-      return t;
+      var slot = null;
+      for (var i = 0; i < telegraphFxPool.length; i++) {
+        if (!telegraphFxPool[i].active) { slot = telegraphFxPool[i]; break; }
+      }
+      if (!slot) return null;
+      slot.active = true;
+      slot.x = x;
+      slot.z = z;
+      slot.radius = radius;
+      slot.t = 0;
+      slot.delay = delay;
+      slot.group.visible = true;
+      slot.group.position.set(x, 0, z);
+      slot.groundMat.color.setHex(color);
+      slot.ringMat.color.setHex(color);
+      slot.columnMat.color.setHex(color);
+      slot.ground.scale.set(radius, 1, radius);
+      slot.ring.scale.set(radius * 0.84, 1, radius * 0.84);
+      telegraphs.push(slot);
+      return slot;
     }
 
     function updateTelegraphs(dt) {
       for (var i = telegraphs.length - 1; i >= 0; i--) {
         var t = telegraphs[i];
         t.t += dt;
-        t.mat.opacity = 0.18 + 0.22 * (0.5 + 0.5 * Math.sin(t.t * 16));
+        var pulse = 0.5 + 0.5 * Math.sin(t.t * 16);
+        t.groundMat.opacity = 0.18 + 0.24 * pulse;
+        t.ringMat.opacity = 0.35 + 0.3 * pulse;
+        t.columnMat.opacity = 0.05 + 0.09 * pulse;
         var s = t.radius * (0.96 + Math.sin(t.t * 16) * 0.03);
-        t.mesh.scale.set(s, 1, s);
+        t.ground.scale.set(s, 1, s);
+        t.ring.scale.set(s * 0.84, 1, s * 0.84);
+        t.column.scale.set(0.09 + pulse * 0.03, 4.0, 0.09 + pulse * 0.03);
         if (t.t >= t.delay) {
-          scene.remove(t.mesh);
+          t.active = false;
+          t.group.visible = false;
           telegraphs.splice(i, 1);
         }
       }
     }
 
+    /* -------------------------------------------------------------- tracers */
+
+    function buildTracerPool() {
+      for (var i = 0; i < MAX.tracers; i++) {
+        var group = new THREE.Group();
+        var coreMat = fxAdditive(0xffffff, 0.95);
+        var midMat = fxAdditive(0xffffff, 0.6);
+        var haloMat = fxAdditive(0xffffff, 0.2);
+        var tipMat = fxAdditive(0xffffff, 0.9);
+        var core = new THREE.Mesh(G.box, coreMat);
+        var mid = new THREE.Mesh(G.box, midMat);
+        var halo = new THREE.Mesh(G.box, haloMat);
+        var tip = new THREE.Mesh(G.lowSphere, tipMat);
+        core.renderOrder = 953;
+        mid.renderOrder = 952;
+        halo.renderOrder = 951;
+        tip.renderOrder = 954;
+        group.add(core);
+        group.add(mid);
+        group.add(halo);
+        group.add(tip);
+        group.visible = false;
+        scene.add(group);
+        tracerFxPool.push({
+          group: group,
+          core: core,
+          mid: mid,
+          halo: halo,
+          tip: tip,
+          coreMat: coreMat,
+          midMat: midMat,
+          haloMat: haloMat,
+          tipMat: tipMat,
+          alive: false,
+          ttl: 0,
+          max: 0.09
+        });
+      }
+    }
+
     function spawnTracer(from, to, color) {
       var slot = null;
-      for (var i = 0; i < tracers.length; i++) {
-        if (!tracers[i].alive) { slot = tracers[i]; break; }
+      for (var i = 0; i < tracerFxPool.length; i++) {
+        if (!tracerFxPool[i].alive) { slot = tracerFxPool[i]; break; }
       }
-      if (!slot) {
-        if (tracers.length >= MAX.tracers) return;
-        var mat = matBasic(color, {
-          transparent: true, opacity: 0.9, blending: 'additive',
-          depthWrite: false, fog: false
-        });
-        var mesh = new THREE.Mesh(G.box, mat);
-        mesh.visible = false;
-        scene.add(mesh);
-        slot = { mesh: mesh, mat: mat, alive: false, ttl: 0, max: 0.07 };
-        tracers.push(slot);
-      }
-      var dir = to.clone().sub(from);
-      var len = dir.length();
+      if (!slot) return;
+      fxTmpVec.copy(to).sub(from);
+      var len = fxTmpVec.length();
       if (len < 0.02) return;
-      dir.multiplyScalar(1 / len);
+      fxTmpVec.multiplyScalar(1 / len);
       slot.alive = true;
-      slot.ttl = slot.max = 0.07;
-      slot.mat.color.setHex(color);
-      slot.mat.opacity = 0.85;
-      slot.mesh.visible = true;
-      slot.mesh.position.copy(from).addScaledVector(dir, len * 0.5);
-      slot.mesh.quaternion.setFromUnitVectors(ZAXIS, dir);
-      slot.mesh.scale.set(0.02, 0.02, len);
+      slot.ttl = slot.max = 0.09;
+      slot.coreMat.color.setHex(0xffffff);
+      slot.midMat.color.setHex(color);
+      slot.haloMat.color.setHex(color);
+      slot.tipMat.color.setHex(0xffffff);
+      slot.coreMat.opacity = 0.95;
+      slot.midMat.opacity = 0.6;
+      slot.haloMat.opacity = 0.2;
+      slot.tipMat.opacity = 0.9;
+      slot.group.visible = true;
+      slot.group.position.copy(from).addScaledVector(fxTmpVec, len * 0.5);
+      slot.group.quaternion.setFromUnitVectors(ZAXIS, fxTmpVec);
+      slot.core.scale.set(0.014, 0.014, len);
+      slot.mid.scale.set(0.05, 0.05, len);
+      slot.halo.scale.set(0.15, 0.15, len);
+      slot.tip.position.z = len * 0.5;
+      slot.tip.scale.setScalar(0.11);
     }
 
     function updateTracers(dt) {
-      for (var i = 0; i < tracers.length; i++) {
-        var t = tracers[i];
+      for (var i = 0; i < tracerFxPool.length; i++) {
+        var t = tracerFxPool[i];
         if (!t.alive) continue;
         t.ttl -= dt;
         if (t.ttl <= 0) {
           t.alive = false;
+          t.group.visible = false;
+          continue;
+        }
+        var k = t.ttl / t.max;
+        var expand = 1 + (1 - k) * 2.6;
+        t.coreMat.opacity = k * 0.95;
+        t.midMat.opacity = k * 0.6;
+        t.haloMat.opacity = k * 0.22;
+        t.tipMat.opacity = k * 0.9;
+        t.core.scale.x = 0.014 * expand;
+        t.core.scale.y = 0.014 * expand;
+        t.mid.scale.x = 0.05 * expand;
+        t.mid.scale.y = 0.05 * expand;
+        t.halo.scale.x = 0.15 * expand;
+        t.halo.scale.y = 0.15 * expand;
+        t.tip.scale.setScalar(0.11 + (1 - k) * 0.1);
+      }
+    }
+
+    /* --------------------------------------------------------------- bullets */
+
+    function buildBulletFxPool() {
+      for (var i = 0; i < MAX.bullets; i++) {
+        var group = new THREE.Group();
+        var coreMat = fxAdditive(0xffffff, 0.95);
+        var haloMat = fxAdditive(0xffffff, 0.28);
+        var core = new THREE.Mesh(G.lowSphere, coreMat);
+        var halo = new THREE.Mesh(G.lowSphere, haloMat);
+        core.renderOrder = 953;
+        halo.renderOrder = 952;
+        group.add(core);
+        group.add(halo);
+        group.visible = false;
+        scene.add(group);
+        bulletFxPool.push({
+          group: group,
+          core: core,
+          halo: halo,
+          coreMat: coreMat,
+          haloMat: haloMat,
+          owner: null,
+          radius: 0.2,
+          phase: arand(0, Math.PI * 2)
+        });
+      }
+    }
+
+    function acquireBulletFx(color, radius) {
+      for (var i = 0; i < bulletFxPool.length; i++) {
+        var slot = bulletFxPool[i];
+        if (slot.owner) continue;
+        slot.owner = true;
+        slot.radius = radius;
+        slot.group.visible = true;
+        slot.haloMat.color.setHex(color);
+        slot.haloMat.opacity = 0.28;
+        slot.core.scale.setScalar(radius * 1.05);
+        slot.halo.scale.setScalar(radius * 2.5);
+        return slot;
+      }
+      return null;
+    }
+
+    function releaseBulletFx(slot) {
+      if (!slot) return;
+      slot.owner = null;
+      slot.group.visible = false;
+    }
+
+    function buildBulletTrailPool() {
+      for (var i = 0; i < BULLET_TRAIL_LIMIT; i++) {
+        var mat = fxAdditive(0xffffff, 0.5);
+        var mesh = new THREE.Mesh(G.box, mat);
+        mesh.visible = false;
+        mesh.renderOrder = 950;
+        scene.add(mesh);
+        bulletTrailPool.push({
+          mesh: mesh,
+          mat: mat,
+          owner: null,
+          ttl: 0,
+          max: 0.16
+        });
+      }
+    }
+
+    function acquireBulletTrail(color, width) {
+      var i, slot = null;
+      for (i = 0; i < bulletTrailPool.length; i++) {
+        if (!bulletTrailPool[i].owner && bulletTrailPool[i].ttl <= 0) {
+          slot = bulletTrailPool[i];
+          break;
+        }
+      }
+      if (!slot) return null;
+      slot.owner = true;
+      slot.ttl = slot.max = 0.16;
+      slot.mesh.visible = true;
+      slot.mat.color.setHex(color);
+      slot.mat.opacity = 0.5;
+      slot.mesh.scale.set(width, width, 1);
+      return slot;
+    }
+
+    function releaseBulletTrail(slot) {
+      if (!slot) return;
+      slot.owner = null;
+      slot.ttl = slot.max = 0.16;
+    }
+
+    function updateBulletTrails(dt) {
+      for (var i = 0; i < bulletTrailPool.length; i++) {
+        var t = bulletTrailPool[i];
+        if (t.owner) continue;
+        if (t.ttl <= 0) {
+          if (t.mesh.visible) t.mesh.visible = false;
+          continue;
+        }
+        t.ttl -= dt;
+        if (t.ttl <= 0) {
           t.mesh.visible = false;
           continue;
         }
-        t.mat.opacity = (t.ttl / t.max) * 0.85;
+        t.mat.opacity = (t.ttl / t.max) * 0.5;
       }
+    }
+
+    /* -------------------------------------------------------------- deflects */
+
+    function buildDeflectFxPool() {
+      for (var i = 0; i < MAX.deflects; i++) {
+        var group = new THREE.Group();
+        var coreMat = fxAdditive(0xffffff, 0.95);
+        var haloMat = fxAdditive(C.cyan, 0.3);
+        var core = new THREE.Mesh(G.lowSphere, coreMat);
+        var halo = new THREE.Mesh(G.lowSphere, haloMat);
+        core.renderOrder = 953;
+        halo.renderOrder = 952;
+        core.scale.setScalar(0.11);
+        halo.scale.setScalar(0.26);
+        group.add(core);
+        group.add(halo);
+        group.visible = false;
+        scene.add(group);
+        deflectFxPool.push({
+          group: group,
+          core: core,
+          halo: halo,
+          coreMat: coreMat,
+          haloMat: haloMat,
+          owner: null,
+          phase: arand(0, Math.PI * 2)
+        });
+      }
+    }
+
+    function acquireDeflectFx() {
+      for (var i = 0; i < deflectFxPool.length; i++) {
+        if (!deflectFxPool[i].owner) {
+          deflectFxPool[i].owner = true;
+          deflectFxPool[i].group.visible = true;
+          return deflectFxPool[i];
+        }
+      }
+      return null;
+    }
+
+    function releaseDeflectFx(slot) {
+      if (!slot) return;
+      slot.owner = null;
+      slot.group.visible = false;
+    }
+
+    /* --------------------------------------------------------------- missiles */
+
+    function buildMissileFxPool() {
+      for (var i = 0; i < MAX.missiles; i++) {
+        var group = new THREE.Group();
+        var coreMat = fxAdditive(0xffe6b0, 0.95);
+        var haloMat = fxAdditive(C.amber, 0.3);
+        var glowMat = fxAdditive(0xffd68a, 0.4);
+        var core = new THREE.Mesh(G.cone, coreMat);
+        var halo = new THREE.Mesh(G.cone, haloMat);
+        var glow = new THREE.Mesh(G.lowSphere, glowMat);
+        core.scale.set(0.22, 0.55, 0.22);
+        halo.scale.set(0.46, 0.72, 0.46);
+        glow.scale.setScalar(0.3);
+        core.renderOrder = 953;
+        halo.renderOrder = 952;
+        glow.renderOrder = 951;
+        group.add(core);
+        group.add(halo);
+        group.add(glow);
+        group.visible = false;
+        scene.add(group);
+        missileFxPool.push({
+          group: group,
+          core: core,
+          halo: halo,
+          glow: glow,
+          coreMat: coreMat,
+          haloMat: haloMat,
+          glowMat: glowMat,
+          owner: null,
+          phase: arand(0, Math.PI * 2)
+        });
+      }
+    }
+
+    function acquireMissileFx() {
+      for (var i = 0; i < missileFxPool.length; i++) {
+        if (!missileFxPool[i].owner) {
+          missileFxPool[i].owner = true;
+          missileFxPool[i].group.visible = true;
+          return missileFxPool[i];
+        }
+      }
+      return null;
+    }
+
+    function releaseMissileFx(slot) {
+      if (!slot) return;
+      slot.owner = null;
+      slot.group.visible = false;
     }
 
     function muzzleWorldPos(target) {
@@ -2991,9 +4334,20 @@
       return target;
     }
 
-    function flashScreen() {
+    var screenFlashToken = 0;
+
+    function flashScreen(hex, strong) {
+      if (!ui.screenFlash) return;
+      var s = (hex === undefined ? 0x57f2ff : hex).toString(16);
+      while (s.length < 6) s = '0' + s;
+      ui.screenFlash.style.setProperty('--flash-color', '#' + s);
+      ui.screenFlash.classList.toggle('is-hard', !!strong);
       ui.screenFlash.classList.add('on');
-      setTimeout(function () { ui.screenFlash.classList.remove('on'); }, 70);
+      var token = ++screenFlashToken;
+      setTimeout(function () {
+        if (token !== screenFlashToken) return;
+        ui.screenFlash.classList.remove('on', 'is-hard');
+      }, strong ? 110 : 70);
     }
 
     function registerHit(kill) {
@@ -3021,7 +4375,8 @@
 
     function clearBullets() {
       for (var i = 0; i < bullets.length; i++) {
-        if (bullets[i].mesh.parent) scene.remove(bullets[i].mesh);
+        releaseBulletFx(bullets[i].fx);
+        releaseBulletTrail(bullets[i].trail);
       }
       bullets.length = 0;
     }
@@ -3084,19 +4439,23 @@
       if (hitEnemy) {
         var wasAlive = !hitEnemy.dead;
         damageEnemy(hitEnemy, dmg, color, point);
+        spawnImpactFx(point, color, 1.25);
         hit = true;
         if (wasAlive) registerHit(hitEnemy.dead);
       } else if (hitBoss) {
         damageBoss(dmg, color, point);
+        spawnImpactFx(point, color, 1.5);
         registerHit(false);
         hit = true;
       } else if (hitMissile) {
         var mi = missiles.indexOf(hitMissile);
         if (mi >= 0) killMissileAt(mi);
+        spawnImpactFx(point, C.amber, 1.2);
         registerHit(false);
         hit = true;
       } else {
-        spawnParticles(point, 0xb9d4e4, 2, 2.2, 0.22, 0.035);
+        spawnParticles(point, 0xb9d4e4, 3, 2.2, 0.22, 0.035);
+        spawnSparks(point, 0xc9e6f2, 4, 3.0, 0.9);
       }
 
       return { point: point, dist: best, hit: hit };
@@ -3129,7 +4488,7 @@
 
       player.recoil = Math.min(1, player.recoil + (d.id === 'scatter' ? 0.85 : 0.32));
       player.shake = Math.max(player.shake, d.id === 'scatter' ? 0.3 : 0.1);
-      muzzleT = 0.05;
+      muzzleT = 0.06;
 
       var origin = new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z);
       var baseDir = forwardVec(new THREE.Vector3());
@@ -3148,6 +4507,7 @@
       if (d.id === 'scatter') {
         spawnParticles(tracerFrom, C.magenta, 4, 3, 0.18, 0.04);
       }
+      spawnSparks(tracerFrom, d.color, 3, 2.8, 0.9);
     }
 
     function meleeStrike() {
@@ -3266,6 +4626,9 @@
       if (muzzleT > 0) {
         var s = 0.1 + Math.random() * 0.08;
         muzzleFlash.scale.set(s, s, s);
+        muzzleFlash.rotation.z += dt * 22;
+        muzzleHaloMat.opacity = 0.16 + Math.random() * 0.16;
+        muzzleRingMat.opacity = 0.2 + Math.random() * 0.28;
       }
 
       updateViewmodel(dt);
@@ -3398,26 +4761,14 @@
 
     /* ----------------------------------------------------------- projectiles */
 
-    var bulletMatCache = {};
-
-    function bulletMaterial(hex) {
-      if (!bulletMatCache[hex]) {
-        bulletMatCache[hex] = matBasic(hex, {
-          transparent: true, opacity: 0.95, blending: 'additive',
-          depthWrite: false, fog: false
-        });
-      }
-      return bulletMatCache[hex];
-    }
 
     function spawnBullet(pos, dir, speed, dmg, color, radius, homing) {
       if (bullets.length >= MAX.bullets) return null;
-      var mesh = new THREE.Mesh(G.lowSphere, bulletMaterial(color));
-      mesh.scale.setScalar(radius);
-      mesh.position.copy(pos);
-      scene.add(mesh);
+      var fx = acquireBulletFx(color, radius);
+      if (!fx) return null;
       var b = {
-        mesh: mesh,
+        fx: fx,
+        trail: acquireBulletTrail(color, radius * 1.7),
         pos: pos.clone(),
         vel: dir.clone().normalize().multiplyScalar(speed),
         speed: speed,
@@ -3428,6 +4779,15 @@
         color: color,
         trailT: 0.08
       };
+      fx.group.position.copy(pos);
+      if (b.trail) {
+        fxTmpDir.copy(b.vel);
+        if (fxTmpDir.lengthSq() > 1e-5) {
+          fxTmpDir.normalize();
+          b.trail.mesh.position.copy(pos).addScaledVector(fxTmpDir, -0.45);
+          b.trail.mesh.quaternion.setFromUnitVectors(ZAXIS, fxTmpDir);
+        }
+      }
       bullets.push(b);
       return b;
     }
@@ -3435,7 +4795,8 @@
     function removeBulletAt(i) {
       var b = bullets[i];
       if (!b) return;
-      if (b.mesh.parent) scene.remove(b.mesh);
+      releaseBulletFx(b.fx);
+      releaseBulletTrail(b.trail);
       bullets.splice(i, 1);
     }
 
@@ -3446,16 +4807,33 @@
         if (b.ttl <= 0) { removeBulletAt(i); continue; }
 
         if (b.homing > 0) {
-          var desired = new THREE.Vector3().copy(player.pos).sub(b.pos);
-          desired.y -= 0.05;
-          if (desired.lengthSq() > 0.0001) {
-            desired.normalize().multiplyScalar(b.speed);
-            b.vel.lerp(desired, Math.min(1, b.homing * dt));
+          fxTmpVec.copy(player.pos).sub(b.pos);
+          fxTmpVec.y -= 0.05;
+          if (fxTmpVec.lengthSq() > 0.0001) {
+            fxTmpVec.normalize().multiplyScalar(b.speed);
+            b.vel.lerp(fxTmpVec, Math.min(1, b.homing * dt));
           }
         }
 
         b.pos.addScaledVector(b.vel, dt);
-        b.mesh.position.copy(b.pos);
+        var pulse = 0.5 + 0.5 * Math.sin(gameTime * 18 + b.fx.phase);
+        b.fx.group.position.copy(b.pos);
+        b.fx.core.scale.setScalar(b.radius * (1.0 + pulse * 0.14));
+        b.fx.halo.scale.setScalar(b.radius * (2.2 + pulse * 0.55));
+        b.fx.haloMat.opacity = 0.18 + pulse * 0.18;
+
+        if (b.trail) {
+          fxTmpDir.copy(b.vel);
+          if (fxTmpDir.lengthSq() > 1e-5) {
+            var speedNow = fxTmpDir.length();
+            fxTmpDir.multiplyScalar(1 / speedNow);
+            var trailLen = clamp(0.55 + speedNow * 0.055, 0.7, 1.9);
+            b.trail.mesh.position.copy(b.pos).addScaledVector(fxTmpDir, -trailLen * 0.5);
+            b.trail.mesh.quaternion.setFromUnitVectors(ZAXIS, fxTmpDir);
+            b.trail.mesh.scale.set(b.radius * 1.65, b.radius * 1.65, trailLen);
+            b.trail.mat.opacity = 0.36 + pulse * 0.2;
+          }
+        }
 
         b.trailT -= dt;
         if (b.trailT <= 0) {
@@ -3471,12 +4849,16 @@
         }
         if (pointInColliders(b.pos)) {
           spawnParticles(b.pos, b.color, 3, 2.6, 0.24, 0.035);
+          spawnSparks(b.pos, b.color, 5, 3.2, 1.0);
+          spawnRingFx(b.pos, 0.55, b.color, 0.18, b.pos.y);
           removeBulletAt(i);
           continue;
         }
         if (b.pos.distanceTo(player.pos) < b.radius + 0.42) {
           if (player.invuln <= 0 && player.dashT <= 0) damagePlayer(b.dmg);
           spawnParticles(b.pos, b.color, 4, 3, 0.3, 0.04);
+          spawnSparks(b.pos, b.color, 6, 4.2, 1.2);
+          spawnRingFx(b.pos, 0.8, b.color, 0.2, b.pos.y);
           removeBulletAt(i);
           continue;
         }
@@ -3485,15 +4867,11 @@
 
     function spawnDeflect(pos, dir) {
       if (deflects.length >= MAX.deflects) return;
-      var mesh = new THREE.Mesh(G.lowSphere, matBasic(C.cyan, {
-        transparent: true, opacity: 0.95, blending: 'additive',
-        depthWrite: false, fog: false
-      }));
-      mesh.scale.setScalar(0.11);
-      mesh.position.copy(pos);
-      scene.add(mesh);
+      var fx = acquireDeflectFx();
+      if (!fx) return;
+      fx.group.position.copy(pos);
       deflects.push({
-        mesh: mesh,
+        fx: fx,
         pos: pos.clone(),
         vel: dir.clone().normalize().multiplyScalar(26),
         ttl: 1.2,
@@ -3506,12 +4884,16 @@
         var d = deflects[i];
         d.ttl -= dt;
         if (d.ttl <= 0) {
-          scene.remove(d.mesh);
+          releaseDeflectFx(d.fx);
           deflects.splice(i, 1);
           continue;
         }
         d.pos.addScaledVector(d.vel, dt);
-        d.mesh.position.copy(d.pos);
+        var pulse = 0.5 + 0.5 * Math.sin(gameTime * 20 + d.fx.phase);
+        d.fx.group.position.copy(d.pos);
+        d.fx.core.scale.setScalar(0.1 + pulse * 0.035);
+        d.fx.halo.scale.setScalar(0.24 + pulse * 0.09);
+        d.fx.haloMat.opacity = 0.2 + pulse * 0.16;
 
         if (Math.random() < 0.4) spawnParticles(d.pos, C.cyan, 1, 0.6, 0.18, 0.025);
 
@@ -3543,7 +4925,8 @@
         }
         if (hit) {
           spawnParticles(d.pos, C.cyan, 3, 3, 0.24, 0.035);
-          scene.remove(d.mesh);
+          spawnSparks(d.pos, C.cyan, 5, 3.5, 1.0);
+          releaseDeflectFx(d.fx);
           deflects.splice(i, 1);
         }
       }
@@ -3553,16 +4936,12 @@
 
     function spawnMissile(pos, dir, speed, turn, ttl, dmg) {
       if (missiles.length >= MAX.missiles) return null;
-      var mesh = new THREE.Mesh(G.cone, matBasic(C.amber, {
-        transparent: true, opacity: 0.95, blending: 'additive',
-        depthWrite: false, fog: false
-      }));
-      mesh.scale.set(0.22, 0.55, 0.22);
-      mesh.position.copy(pos);
-      mesh.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
-      scene.add(mesh);
+      var fx = acquireMissileFx();
+      if (!fx) return null;
+      fx.group.position.copy(pos);
+      fx.group.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
       var m = {
-        mesh: mesh,
+        fx: fx,
         pos: pos.clone(),
         vel: dir.clone().normalize().multiplyScalar(speed),
         speed: speed,
@@ -3579,8 +4958,9 @@
       var m = missiles[i];
       if (!m) return;
       spawnParticles(m.pos, C.amber, 12, 6, 0.42, 0.055);
+      spawnSparks(m.pos, C.amber, 8, 5.5, 1.3);
       spawnRingFx(m.pos, 2.0, C.amber, 0.3, m.pos.y);
-      if (m.mesh.parent) scene.remove(m.mesh);
+      releaseMissileFx(m.fx);
       missiles.splice(i, 1);
     }
 
@@ -3590,15 +4970,23 @@
         m.ttl -= dt;
         if (m.ttl <= 0) { killMissileAt(i); continue; }
 
-        var desired = new THREE.Vector3().copy(player.pos).sub(m.pos);
-        if (desired.lengthSq() > 0.001) {
-          desired.normalize().multiplyScalar(m.speed);
-          m.vel.lerp(desired, Math.min(1, m.turn * dt));
+        fxTmpVec.copy(player.pos).sub(m.pos);
+        if (fxTmpVec.lengthSq() > 0.001) {
+          fxTmpVec.normalize().multiplyScalar(m.speed);
+          m.vel.lerp(fxTmpVec, Math.min(1, m.turn * dt));
         }
         m.pos.addScaledVector(m.vel, dt);
-        m.mesh.position.copy(m.pos);
-        var vn = m.vel.clone().normalize();
-        m.mesh.quaternion.setFromUnitVectors(UP, vn);
+        m.fx.group.position.copy(m.pos);
+        fxTmpDir.copy(m.vel);
+        if (fxTmpDir.lengthSq() > 1e-5) {
+          fxTmpDir.normalize();
+          m.fx.group.quaternion.setFromUnitVectors(UP, fxTmpDir);
+        }
+        var pulse = 0.5 + 0.5 * Math.sin(gameTime * 22 + m.fx.phase);
+        m.fx.core.scale.set(0.22 + pulse * 0.035, 0.55, 0.22 + pulse * 0.035);
+        m.fx.halo.scale.set(0.46 + pulse * 0.08, 0.72, 0.46 + pulse * 0.08);
+        m.fx.glow.scale.setScalar(0.28 + pulse * 0.1);
+        m.fx.glowMat.opacity = 0.3 + pulse * 0.22;
 
         m.trailT -= dt;
         if (m.trailT <= 0) {
@@ -3626,6 +5014,14 @@
       var shellMat = matLambert(0x18243a, { emissive: 0x091524 });
       var coreMat = matBasic(C.magenta);
       var ringMat = matBasic(C.cyanDim, { transparent: true, opacity: 0.9 });
+      var glowMat = matBasic(C.magenta, {
+        transparent: true, opacity: 0.16, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+
+      var glow = new THREE.Mesh(G.lowSphere, glowMat);
+      glow.scale.setScalar(0.62);
+      group.add(glow);
 
       var core = new THREE.Mesh(G.sphere, coreMat);
       core.scale.setScalar(0.34);
@@ -3654,13 +5050,30 @@
       ring.scale.set(0.66, 0.66, 0.66);
       group.add(ring);
 
-      return { group: group, coreMat: coreMat, ringMat: ringMat, ring: ring };
+      return {
+        group: group,
+        coreMat: coreMat,
+        ringMat: ringMat,
+        ring: ring,
+        glowMat: glowMat,
+        glow: glow,
+        glowBase: { x: 0.62, y: 0.62, z: 0.62 }
+      };
     }
 
     function buildTurretMesh() {
       var group = new THREE.Group();
       var mountMat = matLambert(0x1b2740, { emissive: 0x070d18 });
       var glowMat = matBasic(C.amber);
+      var auraMat = matBasic(C.amber, {
+        transparent: true, opacity: 0.14, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+
+      var aura = new THREE.Mesh(G.lowSphere, auraMat);
+      aura.position.set(0, 0, 0.16);
+      aura.scale.set(0.9, 0.62, 0.82);
+      group.add(aura);
 
       var back = new THREE.Mesh(G.box, mountMat);
       back.position.set(0, 0, -0.32);
@@ -3686,7 +5099,14 @@
       head.add(halo);
       group.add(head);
 
-      return { group: group, head: head, coreMat: glowMat };
+      return {
+        group: group,
+        head: head,
+        coreMat: glowMat,
+        auraMat: auraMat,
+        aura: aura,
+        auraBase: { x: 0.9, y: 0.62, z: 0.82 }
+      };
     }
 
     function spawnSentinel(x, z) {
@@ -3697,6 +5117,10 @@
         coreMat: built.coreMat,
         ringMat: built.ringMat,
         ring: built.ring,
+        glowMat: built.glowMat,
+        glow: built.glow,
+        glowBase: built.glowBase,
+        shadow: null,
         pos: new THREE.Vector3(x, 1.55, z),
         hp: 46,
         maxHp: 46,
@@ -3711,6 +5135,7 @@
       };
       e.group.position.copy(e.pos);
       scene.add(e.group);
+      e.shadow = acquireContactShadow(e, 1.08, 0.27);
       enemies.push(e);
       spawnRingFx(e.pos, 2.2, C.magenta, 0.45, 0.1);
       spawnParticles(e.pos, C.magenta, 10, 5, 0.4, 0.05);
@@ -3726,6 +5151,10 @@
         coreMat: built.coreMat,
         ringMat: built.coreMat,
         ring: null,
+        auraMat: built.auraMat,
+        aura: built.aura,
+        auraBase: built.auraBase,
+        shadow: null,
         pos: new THREE.Vector3(x, 2.15, z),
         hp: 80,
         maxHp: 80,
@@ -3742,6 +5171,7 @@
       };
       e.group.position.copy(e.pos);
       scene.add(e.group);
+      e.shadow = acquireContactShadow(e, 1.22, 0.23);
       enemies.push(e);
       spawnRingFx(e.pos, 2.0, C.amber, 0.4, e.pos.y);
       spawnParticles(e.pos, C.amber, 8, 4, 0.35, 0.045);
@@ -3760,6 +5190,7 @@
       if (!e || e.dead) return;
       e.dead = true;
       kills++;
+      releaseContactShadow(e.shadow);
       spawnParticles(e.pos, e.type === 'turret' ? C.amber : C.magenta, 22, 7.5, 0.55, 0.07);
       spawnRingFx(e.pos, 2.6, e.type === 'turret' ? C.amber : C.magenta, 0.45, Math.max(0.1, e.pos.y - 0.5));
       if (e.group.parent) scene.remove(e.group);
@@ -3772,6 +5203,7 @@
 
     function clearEnemies() {
       for (var i = 0; i < enemies.length; i++) {
+        releaseContactShadow(enemies[i].shadow);
         if (enemies[i].group && enemies[i].group.parent) scene.remove(enemies[i].group);
       }
       enemies.length = 0;
@@ -3866,6 +5298,28 @@
           if (e.flash > 0) e.coreMat.color.setHex(0xffffff);
           else e.coreMat.color.setHex(e.type === 'turret' ? C.amber : C.magenta);
         }
+        if (e.glowMat) {
+          var glowPulse = 0.82 + 0.18 * Math.sin(worldClock * 5.2 + e.bobPhase);
+          e.glowMat.opacity = (e.type === 'turret' ? 0.16 : 0.18) * glowPulse;
+          e.glowMat.color.setHex(e.flash > 0 ? 0xffffff : (e.type === 'turret' ? C.amber : C.magenta));
+          if (e.glow && e.glowBase) {
+            e.glow.scale.set(
+              e.glowBase.x * glowPulse,
+              e.glowBase.y * glowPulse,
+              e.glowBase.z * glowPulse
+            );
+          }
+        }
+        if (e.auraMat && e.aura && e.auraBase) {
+          var auraPulse = 0.9 + 0.1 * Math.sin(worldClock * 4.1 + e.bobPhase);
+          e.auraMat.opacity = 0.11 + 0.05 * (0.5 + 0.5 * Math.sin(worldClock * 6.3));
+          e.auraMat.color.setHex(e.flash > 0 ? 0xffffff : C.amber);
+          e.aura.scale.set(
+            e.auraBase.x * auraPulse,
+            e.auraBase.y * auraPulse,
+            e.auraBase.z * auraPulse
+          );
+        }
 
         if (e.type === 'sentinel') updateSentinel(e, dt, slowF);
         else updateTurret(e, dt, slowF);
@@ -3888,7 +5342,25 @@
     function buildBossMesh() {
       var group = new THREE.Group();
 
-      var coreMat = matLambert(0x2a0a1e, { emissive: 0xff3a9a });
+      var auraMat = matBasic(0xff4fb8, {
+        transparent: true, opacity: 0.08, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var aura = new THREE.Mesh(G.lowSphere, auraMat);
+      aura.scale.setScalar(1.62);
+      group.add(aura);
+
+      var auraCoreMat = matBasic(0xff8fd6, {
+        transparent: true, opacity: 0.16, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var auraCore = new THREE.Mesh(G.lowSphere, auraCoreMat);
+      auraCore.scale.setScalar(1.06);
+      group.add(auraCore);
+
+      var coreMat = matLambert(0x2a0a1e, {
+        emissive: 0xff3a9a, specular: 0.62, roughness: 0.24
+      });
       var core = new THREE.Mesh(G.sphere, coreMat);
       core.scale.setScalar(0.92);
       group.add(core);
@@ -3901,7 +5373,9 @@
 
       var plateGeo = new THREE.BoxGeometry(1.8, 0.5, 0.82);
       plateGeo._owned = true;
-      var plateMat = matLambert(0x1c2940, { emissive: 0x0b1424 });
+      var plateMat = matLambert(0x1c2940, {
+        emissive: 0x0b1424, specular: 0.55, roughness: 0.3
+      });
       var plates = [];
       for (var i = 0; i < 3; i++) {
         var angle = i * Math.PI * 2 / 3;
@@ -3933,6 +5407,25 @@
       ring2.rotation.z = 0.5;
       group.add(ring2);
 
+      // Grounded phase light: two additive pools that follow the core while
+      // staying on the arena floor (their local Y is corrected each frame).
+      var floorGlowMat = matBasic(0xff4fb8, {
+        transparent: true, opacity: 0.09, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var floorGlow = new THREE.Mesh(G.circle, floorGlowMat);
+      floorGlow.scale.set(3.7, 1, 3.7);
+      floorGlow.position.set(0, -2.4, 0);
+      group.add(floorGlow);
+      var floorCoreMat = matBasic(0xff9ad8, {
+        transparent: true, opacity: 0.13, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var floorCore = new THREE.Mesh(G.circle, floorCoreMat);
+      floorCore.scale.set(1.85, 1, 1.85);
+      floorCore.position.set(0, -2.39, 0);
+      group.add(floorCore);
+
       var shieldGroup = new THREE.Group();
       var shieldMat = matBasic(C.cyan, {
         transparent: true, opacity: 0.1, blending: 'additive',
@@ -3961,6 +5454,14 @@
         plates: plates,
         ring: ring,
         ring2: ring2,
+        aura: aura,
+        auraMat: auraMat,
+        auraCore: auraCore,
+        auraCoreMat: auraCoreMat,
+        floorGlow: floorGlow,
+        floorGlowMat: floorGlowMat,
+        floorCore: floorCore,
+        floorCoreMat: floorCoreMat,
         shieldGroup: shieldGroup,
         shieldMat: shieldMat,
         ringMat: ringMat,
@@ -3983,6 +5484,17 @@
         plates: built.plates,
         ring: built.ring,
         ring2: built.ring2,
+        aura: built.aura,
+        auraMat: built.auraMat,
+        auraCore: built.auraCore,
+        auraCoreMat: built.auraCoreMat,
+        floorGlow: built.floorGlow,
+        floorGlowMat: built.floorGlowMat,
+        floorCore: built.floorCore,
+        floorCoreMat: built.floorCoreMat,
+        auraHex: 0,
+        isBoss: true,
+        shadow: null,
         shieldGroup: built.shieldGroup,
         shieldMat: built.shieldMat,
         ringMat: built.ringMat,
@@ -4008,6 +5520,7 @@
         contactCd: 0,
         deadT: 0
       };
+      boss.shadow = acquireContactShadow(boss, 3.05, 0.32);
 
       bossEverSpawned = true;
       bossDefeated = false;
@@ -4061,7 +5574,9 @@
       spawnRingFx(boss.pos, 9, C.magenta, 0.8, 1.4);
       spawnRingFx(boss.pos, 6, C.violet, 0.6, 1.0);
       spawnParticles(boss.pos, C.magenta, 40, 12, 0.9, 0.09);
+      boss.flash = Math.max(boss.flash, 0.22);
       player.shake = Math.max(player.shake, 0.5);
+      flashScreen(phase === 3 ? 0xff3d32 : 0x9b6bff, true);
       addToast('守门者进入第 ' + phase + ' 阶段', 'boss');
       if (phase === 3) {
         boss.summonCd = 15;
@@ -4079,6 +5594,7 @@
       boss.action = null;
 
       var pos = boss.pos.clone();
+      releaseContactShadow(boss.shadow);
       if (boss.group) {
         disposeOwned(boss.group);
         if (boss.group.parent) scene.remove(boss.group);
@@ -4093,20 +5609,22 @@
       clearBullets();
       clearEnemies();
       for (var mi = 0; mi < missiles.length; mi++) {
-        if (missiles[mi].mesh.parent) scene.remove(missiles[mi].mesh);
+        releaseMissileFx(missiles[mi].fx);
       }
       missiles.length = 0;
       for (var li = 0; li < lasers.length; li++) {
-        if (lasers[li].mesh.parent) scene.remove(lasers[li].mesh);
+        lasers[li].running = false;
+        lasers[li].group.visible = false;
       }
       lasers.length = 0;
       for (var wi = 0; wi < shockwaves.length; wi++) {
-        disposeOwned(shockwaves[wi].group);
-        if (shockwaves[wi].group.parent) scene.remove(shockwaves[wi].group);
+        shockwaves[wi].running = false;
+        shockwaves[wi].group.visible = false;
       }
       shockwaves.length = 0;
       for (var ti = 0; ti < telegraphs.length; ti++) {
-        if (telegraphs[ti].mesh.parent) scene.remove(telegraphs[ti].mesh);
+        telegraphs[ti].active = false;
+        telegraphs[ti].group.visible = false;
       }
       telegraphs.length = 0;
       boss = null;
@@ -4117,7 +5635,7 @@
       updateExitVisuals();
       setArenaPhase(4);
       player.shake = 0.9;
-      flashScreen();
+      flashScreen(0xff4fb8, true);
       addToast('零号守门者解体 // 出口已解锁', 'good');
       updateObjective();
     }
@@ -4319,6 +5837,27 @@
       var coreScale = 0.92 + Math.sin(boss.t * 3.2) * 0.03 + (boss.exposed > 0 ? 0.16 : 0);
       boss.core.scale.setScalar(coreScale);
 
+      // Phase-coded layered core glow and a grounded light pool.  Only colour
+      // and opacity change here; the meshes/materials were built on spawn.
+      var auraHex = boss.phase === 3 ? 0xff4d6d : (boss.phase === 2 ? 0xffc45a : 0xff4fb8);
+      if (boss.auraHex !== auraHex) {
+        boss.auraHex = auraHex;
+        boss.auraMat.color.setHex(auraHex);
+        boss.auraCoreMat.color.setHex(auraHex);
+        boss.floorGlowMat.color.setHex(auraHex);
+        boss.floorCoreMat.color.setHex(auraHex);
+      }
+      var auraPulse = 0.5 + 0.5 * Math.sin(boss.t * (boss.phase === 3 ? 7 : 3.4));
+      boss.aura.scale.setScalar(1.52 + auraPulse * 0.18 + (boss.exposed > 0 ? 0.2 : 0));
+      boss.auraCore.scale.setScalar(0.98 + auraPulse * 0.14);
+      boss.auraMat.opacity = 0.04 + auraPulse * 0.03;
+      boss.auraCoreMat.opacity = 0.08 + auraPulse * 0.05;
+      boss.floorGlow.position.y = 0.07 - boss.pos.y;
+      boss.floorCore.position.y = 0.075 - boss.pos.y;
+      var floorPulse = 0.82 + 0.18 * Math.sin(boss.t * 2.6);
+      boss.floorGlowMat.opacity = (boss.exposed > 0 ? 0.11 : 0.065) * floorPulse;
+      boss.floorCoreMat.opacity = (boss.exposed > 0 ? 0.15 : 0.095) * floorPulse;
+
       boss.ring.rotation.z += dt * 1.5;
       boss.ring2.rotation.z -= dt * 2.1;
 
@@ -4367,27 +5906,154 @@
 
     /* --------------------------------------------------------------- lasers */
 
+    function buildLaserPool() {
+      for (var i = 0; i < MAX.lasers; i++) {
+        var group = new THREE.Group();
+        var mats = {
+          warnFloor: fxAdditive(0xff4d6d, 0.1),
+          warnOuter: fxAdditive(0xff4d6d, 0.14),
+          warnCore: fxAdditive(0xffffff, 0.5),
+          chargeOuter: fxAdditive(0xff4d6d, 0.1),
+          chargeCore: fxAdditive(0xffffff, 0.5),
+          beamHalo: fxAdditive(0xff4d6d, 0.2),
+          beamMid: fxAdditive(0xff4d6d, 0.65),
+          beamCore: fxAdditive(0xffffff, 0.95),
+          impact: fxAdditive(0xffffff, 0.8),
+          surge: fxAdditive(0xffffff, 0.9)
+        };
+        var parts = {};
+        parts.warnFloor = new THREE.Mesh(G.box, mats.warnFloor);
+        parts.warnFloor.position.y = -1.389;
+        parts.warnOuter = new THREE.Mesh(G.box, mats.warnOuter);
+        parts.warnCore = new THREE.Mesh(G.box, mats.warnCore);
+        parts.chargeOuter = new THREE.Mesh(G.box, mats.chargeOuter);
+        parts.chargeCore = new THREE.Mesh(G.box, mats.chargeCore);
+        parts.beamHalo = new THREE.Mesh(G.box, mats.beamHalo);
+        parts.beamMid = new THREE.Mesh(G.box, mats.beamMid);
+        parts.beamCore = new THREE.Mesh(G.box, mats.beamCore);
+        parts.impactA = new THREE.Mesh(G.lowSphere, mats.impact);
+        parts.impactB = new THREE.Mesh(G.lowSphere, mats.impact);
+        parts.surgeA = new THREE.Mesh(G.box, mats.surge);
+        parts.surgeB = new THREE.Mesh(G.box, mats.surge);
+        parts.warnFloor.renderOrder = 6;
+        parts.warnOuter.renderOrder = 7;
+        parts.warnCore.renderOrder = 8;
+        parts.chargeOuter.renderOrder = 8;
+        parts.chargeCore.renderOrder = 9;
+        parts.beamHalo.renderOrder = 8;
+        parts.beamMid.renderOrder = 9;
+        parts.beamCore.renderOrder = 10;
+        parts.impactA.renderOrder = 10;
+        parts.impactB.renderOrder = 10;
+        parts.surgeA.renderOrder = 11;
+        parts.surgeB.renderOrder = 11;
+        var keys = Object.keys(parts);
+        for (var k = 0; k < keys.length; k++) group.add(parts[keys[k]]);
+        group.visible = false;
+        scene.add(group);
+        laserFxPool.push({
+          group: group,
+          mats: mats,
+          parts: parts,
+          running: false,
+          axis: 'x',
+          coord: 0,
+          len: 42,
+          t: 0,
+          warn: 0.9,
+          active: 1.25,
+          tick: 0,
+          fired: false,
+          phase: 2,
+          sparkT: 0
+        });
+      }
+    }
+
+    function applyLaserColors(l) {
+      var mid, halo, core;
+      if (l.phase === 3) {
+        mid = 0xff3d32;
+        halo = 0xff2a20;
+        core = 0xffffff;
+      } else if (l.phase === 2) {
+        mid = 0xff4fb8;
+        halo = 0x9b6bff;
+        core = 0xffffff;
+      } else {
+        mid = 0xff4d6d;
+        halo = 0xff2a3d;
+        core = 0xffffff;
+      }
+      l.mats.warnFloor.color.setHex(mid);
+      l.mats.warnOuter.color.setHex(mid);
+      l.mats.warnCore.color.setHex(core);
+      l.mats.chargeOuter.color.setHex(mid);
+      l.mats.chargeCore.color.setHex(core);
+      l.mats.beamHalo.color.setHex(halo);
+      l.mats.beamMid.color.setHex(mid);
+      l.mats.beamCore.color.setHex(core);
+      l.mats.impact.color.setHex(core);
+      l.mats.surge.color.setHex(core);
+    }
+
+    function setLaserWarnVisible(l, warning) {
+      var p = l.parts;
+      p.warnFloor.visible = warning;
+      p.warnOuter.visible = warning;
+      p.warnCore.visible = warning;
+      p.chargeOuter.visible = warning;
+      p.chargeCore.visible = warning;
+      p.beamHalo.visible = !warning;
+      p.beamMid.visible = !warning;
+      p.beamCore.visible = !warning;
+      p.impactA.visible = !warning;
+      p.impactB.visible = !warning;
+      p.surgeA.visible = !warning;
+      p.surgeB.visible = !warning;
+    }
+
     function spawnBossLaser(axis, coord) {
       if (lasers.length >= MAX.lasers) return;
-      var mat = matBasic(C.red, {
-        transparent: true, opacity: 0.28, blending: 'additive',
-        depthWrite: false, fog: false
-      });
-      var mesh = new THREE.Mesh(G.box, mat);
-      mesh.position.set(axis === 'x' ? 0 : coord, 1.45, axis === 'x' ? coord : 0);
-      mesh.scale.set(axis === 'x' ? 42 : 0.12, 0.06, axis === 'x' ? 0.12 : 34);
-      scene.add(mesh);
-      lasers.push({
-        mesh: mesh,
-        mat: mat,
-        axis: axis,
-        coord: coord,
-        t: 0,
-        warn: 0.9,
-        active: 1.25,
-        tick: 0,
-        fired: false
-      });
+      var slot = null;
+      for (var i = 0; i < laserFxPool.length; i++) {
+        if (!laserFxPool[i].running) { slot = laserFxPool[i]; break; }
+      }
+      if (!slot) return;
+      var len = axis === 'x' ? 42 : 34;
+      slot.running = true;
+      slot.axis = axis;
+      slot.coord = coord;
+      slot.len = len;
+      slot.t = 0;
+      slot.tick = 0;
+      slot.fired = false;
+      slot.sparkT = 0;
+      slot.phase = boss && boss.phase ? boss.phase : 2;
+      slot.group.visible = true;
+      slot.group.position.set(axis === 'x' ? 0 : coord, 1.45, axis === 'x' ? coord : 0);
+      slot.group.rotation.y = axis === 'x' ? 0 : Math.PI / 2;
+
+      var p = slot.parts;
+      p.warnFloor.scale.set(len, 0.008, 0.46);
+      p.warnOuter.scale.set(len, 0.14, 0.34);
+      p.warnCore.scale.set(len, 0.034, 0.07);
+      p.chargeOuter.scale.set(len * 0.1, 0.42, 0.42);
+      p.chargeCore.scale.set(len * 0.1, 0.09, 0.11);
+      p.beamHalo.scale.set(len, 0.7, 0.7);
+      p.beamMid.scale.set(len, 0.26, 0.26);
+      p.beamCore.scale.set(len, 0.07, 0.07);
+      p.impactA.position.set(-len * 0.5, 0, 0);
+      p.impactB.position.set(len * 0.5, 0, 0);
+      p.impactA.scale.setScalar(0.34);
+      p.impactB.scale.setScalar(0.34);
+      p.surgeA.position.set(-len * 0.3, 0, 0);
+      p.surgeB.position.set(len * 0.3, 0, 0);
+      p.surgeA.scale.set(1.4, 0.12, 0.12);
+      p.surgeB.scale.set(1.4, 0.12, 0.12);
+      applyLaserColors(slot);
+      setLaserWarnVisible(slot, true);
+      lasers.push(slot);
       addToast('激光预警 // 离开红线', 'danger');
     }
 
@@ -4395,19 +6061,63 @@
       for (var i = lasers.length - 1; i >= 0; i--) {
         var l = lasers[i];
         l.t += dt;
+        var p = l.parts;
 
         if (l.t < l.warn) {
-          l.mat.opacity = 0.16 + 0.18 * (0.5 + 0.5 * Math.sin(l.t * 24));
+          var charge = clamp((l.t - l.warn * 0.55) / (l.warn * 0.45), 0, 1);
+          var pulse = 0.5 + 0.5 * Math.sin(l.t * 24);
+          l.mats.warnFloor.opacity = 0.07 + 0.12 * pulse;
+          l.mats.warnOuter.opacity = 0.1 + 0.12 * pulse;
+          l.mats.warnCore.opacity = 0.3 + 0.35 * pulse;
+          l.mats.chargeOuter.opacity = 0.04 + charge * 0.2;
+          l.mats.chargeCore.opacity = 0.18 + charge * 0.78;
+          p.chargeOuter.scale.x = l.len * (0.1 + 0.9 * charge);
+          p.chargeCore.scale.x = l.len * (0.1 + 0.9 * charge);
+          p.chargeOuter.scale.y = 0.3 + charge * 0.18;
+          p.chargeOuter.scale.z = 0.3 + charge * 0.18;
+          p.chargeCore.scale.y = 0.06 + charge * 0.05;
+          p.chargeCore.scale.z = 0.08 + charge * 0.06;
         } else if (l.t < l.warn + l.active) {
           if (!l.fired) {
             l.fired = true;
-            l.mat.color.setHex(C.magenta);
-            l.mat.opacity = 0.85;
-            l.mesh.scale.set(l.axis === 'x' ? 42 : 0.24, 0.14, l.axis === 'x' ? 0.24 : 34);
-            flashScreen();
-            player.shake = Math.max(player.shake, 0.3);
+            setLaserWarnVisible(l, false);
+            flashScreen(laserPaletteHex(l.phase), true);
+            player.shake = Math.max(player.shake, 0.46);
+            fxTmpVec.set(
+              l.axis === 'x' ? player.pos.x : l.coord,
+              1.45,
+              l.axis === 'x' ? l.coord : player.pos.z
+            );
+            spawnSparks(fxTmpVec, laserPaletteHex(l.phase), 8, 5.5, 1.4);
           }
-          l.mat.opacity = 0.7 + 0.15 * Math.sin(l.t * 40);
+          var stroke = 0.5 + 0.5 * Math.sin(l.t * 40);
+          l.mats.beamHalo.opacity = 0.14 + stroke * 0.12;
+          l.mats.beamMid.opacity = 0.55 + stroke * 0.22;
+          l.mats.beamCore.opacity = 0.9 + stroke * 0.08;
+          l.mats.impact.opacity = 0.55 + stroke * 0.4;
+          l.mats.surge.opacity = 0.75 + stroke * 0.22;
+          p.beamHalo.scale.y = 0.62 + stroke * 0.18;
+          p.beamHalo.scale.z = 0.62 + stroke * 0.18;
+          p.beamMid.scale.y = 0.24 + stroke * 0.06;
+          p.beamMid.scale.z = 0.24 + stroke * 0.06;
+          p.beamCore.scale.y = 0.065 + stroke * 0.02;
+          p.beamCore.scale.z = 0.065 + stroke * 0.02;
+          p.impactA.scale.setScalar(0.32 + stroke * 0.3);
+          p.impactB.scale.setScalar(0.32 + stroke * 0.3);
+          var travel = (l.t - l.warn) * 1.8;
+          p.surgeA.position.x = -l.len * 0.5 + ((travel * 14) % l.len);
+          p.surgeB.position.x = l.len * 0.5 - ((travel * 11 + 7) % l.len);
+
+          l.sparkT -= dt;
+          if (l.sparkT <= 0) {
+            l.sparkT = 0.09;
+            fxTmpVec.set(
+              l.axis === 'x' ? clamp(player.pos.x + rnd(-3, 3), ARENA.minX, ARENA.maxX) : l.coord,
+              1.45,
+              l.axis === 'x' ? l.coord : clamp(player.pos.z + rnd(-3, 3), ARENA.minZ, ARENA.maxZ)
+            );
+            spawnSparks(fxTmpVec, laserPaletteHex(l.phase), 2, 3.4, 0.9);
+          }
 
           var hitPlayer = l.axis === 'x'
             ? Math.abs(player.pos.z - l.coord) < 0.55
@@ -4422,7 +6132,8 @@
             l.tick = 0;
           }
         } else {
-          scene.remove(l.mesh);
+          l.running = false;
+          l.group.visible = false;
           lasers.splice(i, 1);
         }
       }
@@ -4430,40 +6141,101 @@
 
     /* ------------------------------------------------------------ shockwave */
 
+    var shockArcGeometries = null;
+
+    function ensureShockArcGeometries() {
+      if (shockArcGeometries) return;
+      shockArcGeometries = [];
+      var variants = [0.4, 0.24];
+      for (var v = 0; v < variants.length; v++) {
+        var gapHalf = variants[v];
+        var arcLen = (Math.PI * 2 - 3 * gapHalf * 2) / 3;
+        shockArcGeometries.push({
+          gapHalf: gapHalf,
+          core: new THREE.TorusGeometry(1, 0.055, 4, 14, arcLen),
+          halo: new THREE.TorusGeometry(1, 0.15, 4, 14, arcLen)
+        });
+      }
+    }
+
+    function buildShockwavePool() {
+      ensureShockArcGeometries();
+      for (var i = 0; i < MAX.shockwaves; i++) {
+        var group = new THREE.Group();
+        var coreMat = fxAdditive(0xffffff, 0.85);
+        var haloMat = fxAdditive(C.magenta, 0.22);
+        var cores = [[], []];
+        var halos = [[], []];
+        for (var v = 0; v < 2; v++) {
+          for (var k = 0; k < 3; k++) {
+            var core = new THREE.Mesh(shockArcGeometries[v].core, coreMat);
+            var halo = new THREE.Mesh(shockArcGeometries[v].halo, haloMat);
+            core.renderOrder = 10;
+            halo.renderOrder = 9;
+            core.visible = false;
+            halo.visible = false;
+            group.add(core);
+            group.add(halo);
+            cores[v].push(core);
+            halos[v].push(halo);
+          }
+        }
+        group.visible = false;
+        scene.add(group);
+        shockwaveFxPool.push({
+          group: group,
+          coreMat: coreMat,
+          haloMat: haloMat,
+          cores: cores,
+          halos: halos,
+          running: false,
+          gaps: [0, 0, 0],
+          gapHalf: 0.4,
+          r: 0.9,
+          maxR: 26,
+          speed: 0,
+          hit: false
+        });
+      }
+    }
+
     function spawnShockwave(origin, gaps, gapHalf, speed) {
       if (shockwaves.length >= MAX.shockwaves) return;
-      var group = new THREE.Group();
-      group.position.set(origin.x, 0.72, origin.z);
-
-      var arcLen = (Math.PI * 2 - gaps.length * gapHalf * 2) / gaps.length;
-      var mats = [];
-      for (var k = 0; k < gaps.length; k++) {
-        var mat = matBasic(C.magenta, {
-          transparent: true, opacity: 0.85, blending: 'additive',
-          depthWrite: false, fog: false
-        });
-        var geo = new THREE.TorusGeometry(1, 0.055, 4, 14, arcLen);
-        geo._owned = true;
-        var mesh = new THREE.Mesh(geo, mat);
-        var start = gaps[k] + gapHalf;
-        mesh.rotation.y = -start;
-        group.add(mesh);
-        mats.push(mat);
+      var slot = null;
+      for (var i = 0; i < shockwaveFxPool.length; i++) {
+        if (!shockwaveFxPool[i].running) { slot = shockwaveFxPool[i]; break; }
       }
-      scene.add(group);
-
-      shockwaves.push({
-        group: group,
-        mats: mats,
-        x: origin.x,
-        z: origin.z,
-        r: 0.9,
-        maxR: 26,
-        speed: speed,
-        gapHalf: gapHalf,
-        gaps: gaps.slice(),
-        hit: false
-      });
+      if (!slot) return;
+      var variant = gapHalf >= 0.32 ? 0 : 1;
+      var v, k;
+      slot.running = true;
+      slot.x = origin.x;
+      slot.z = origin.z;
+      slot.r = 0.9;
+      slot.maxR = 26;
+      slot.speed = speed;
+      slot.gapHalf = gapHalf;
+      slot.hit = false;
+      for (k = 0; k < 3; k++) slot.gaps[k] = gaps[k] || 0;
+      slot.group.visible = true;
+      slot.group.position.set(origin.x, 0.72, origin.z);
+      slot.group.scale.set(slot.r, 1, slot.r);
+      var phaseHex = boss && boss.phase === 3 ? 0xff4d6d : C.magenta;
+      slot.coreMat.color.setHex(0xffffff);
+      slot.haloMat.color.setHex(phaseHex);
+      slot.coreMat.opacity = 0.85;
+      slot.haloMat.opacity = 0.22;
+      for (v = 0; v < 2; v++) {
+        var show = v === variant;
+        for (k = 0; k < 3; k++) {
+          slot.cores[v][k].visible = show;
+          slot.halos[v][k].visible = show;
+          var rot = -(slot.gaps[k] + gapHalf);
+          slot.cores[v][k].rotation.y = rot;
+          slot.halos[v][k].rotation.y = rot;
+        }
+      }
+      shockwaves.push(slot);
     }
 
     function updateShockwaves(dt) {
@@ -4483,18 +6255,22 @@
                 break;
               }
             }
-            if (!safe) damagePlayer(18);
+            if (!safe) {
+              damagePlayer(18);
+              spawnSparks(player.pos, C.magenta, 8, 5.5, 1.5);
+            }
             w.hit = true;
           }
         }
 
         if (w.r >= w.maxR) {
-          disposeOwned(w.group);
-          scene.remove(w.group);
+          w.running = false;
+          w.group.visible = false;
           shockwaves.splice(i, 1);
         } else {
           var fade = 1 - w.r / w.maxR;
-          for (var m = 0; m < w.mats.length; m++) w.mats[m].opacity = 0.25 + fade * 0.65;
+          w.coreMat.opacity = 0.35 + fade * 0.6;
+          w.haloMat.opacity = 0.1 + fade * 0.28;
         }
       }
     }
@@ -4627,49 +6403,87 @@
       clearBullets();
 
       for (i = 0; i < deflects.length; i++) {
-        if (deflects[i].mesh.parent) scene.remove(deflects[i].mesh);
+        releaseDeflectFx(deflects[i].fx);
       }
       deflects.length = 0;
 
       for (i = 0; i < missiles.length; i++) {
-        if (missiles[i].mesh.parent) scene.remove(missiles[i].mesh);
+        releaseMissileFx(missiles[i].fx);
       }
       missiles.length = 0;
 
-      for (i = 0; i < tracers.length; i++) {
-        tracers[i].alive = false;
-        tracers[i].mesh.visible = false;
+      for (i = 0; i < tracerFxPool.length; i++) {
+        tracerFxPool[i].alive = false;
+        tracerFxPool[i].group.visible = false;
+      }
+      for (i = 0; i < bulletFxPool.length; i++) {
+        bulletFxPool[i].owner = null;
+        bulletFxPool[i].group.visible = false;
+      }
+      for (i = 0; i < deflectFxPool.length; i++) {
+        deflectFxPool[i].owner = null;
+        deflectFxPool[i].group.visible = false;
+      }
+      for (i = 0; i < missileFxPool.length; i++) {
+        missileFxPool[i].owner = null;
+        missileFxPool[i].group.visible = false;
       }
       for (i = 0; i < particles.length; i++) {
         particles[i].alive = false;
         particles[i].mesh.visible = false;
       }
+      for (i = 0; i < sparkFxPool.length; i++) {
+        sparkFxPool[i].alive = false;
+        sparkFxPool[i].mesh.visible = false;
+      }
+      for (i = 0; i < bulletTrailPool.length; i++) {
+        bulletTrailPool[i].owner = null;
+        bulletTrailPool[i].ttl = 0;
+        bulletTrailPool[i].mesh.visible = false;
+      }
       for (i = 0; i < telegraphs.length; i++) {
-        if (telegraphs[i].mesh.parent) scene.remove(telegraphs[i].mesh);
+        telegraphs[i].active = false;
+        telegraphs[i].group.visible = false;
       }
       telegraphs.length = 0;
+      for (i = 0; i < telegraphFxPool.length; i++) {
+        telegraphFxPool[i].active = false;
+        telegraphFxPool[i].group.visible = false;
+      }
 
       for (i = 0; i < shockwaves.length; i++) {
-        disposeOwned(shockwaves[i].group);
-        if (shockwaves[i].group.parent) scene.remove(shockwaves[i].group);
+        shockwaves[i].running = false;
+        shockwaves[i].group.visible = false;
       }
       shockwaves.length = 0;
+      for (i = 0; i < shockwaveFxPool.length; i++) {
+        shockwaveFxPool[i].running = false;
+        shockwaveFxPool[i].group.visible = false;
+      }
 
       for (i = 0; i < lasers.length; i++) {
-        if (lasers[i].mesh.parent) scene.remove(lasers[i].mesh);
+        lasers[i].running = false;
+        lasers[i].group.visible = false;
       }
       lasers.length = 0;
-
-      for (i = 0; i < rings.length; i++) {
-        if (rings[i].mesh.parent) scene.remove(rings[i].mesh);
+      for (i = 0; i < laserFxPool.length; i++) {
+        laserFxPool[i].running = false;
+        laserFxPool[i].group.visible = false;
       }
-      rings.length = 0;
+
+      for (i = 0; i < ringFxPool.length; i++) {
+        ringFxPool[i].alive = false;
+        ringFxPool[i].mesh.visible = false;
+      }
+      resetReflectionStrips();
       pending.length = 0;
 
       if (boss && boss.group) {
         disposeOwned(boss.group);
         if (boss.group.parent) scene.remove(boss.group);
+        releaseContactShadow(boss.shadow);
       }
+      releaseAllContactShadows();
       boss = null;
     }
 
@@ -4713,7 +6527,8 @@
       ui.banner.hidden = true;
       if (ui.toasts) ui.toasts.innerHTML = '';
       ui.damage.style.opacity = '0';
-      ui.screenFlash.classList.remove('on');
+      ui.screenFlash.classList.remove('on', 'is-hard');
+      screenFlashToken++;
       ui.hitmarker.classList.remove('show', 'kill');
 
       resetWeapons();
@@ -4769,7 +6584,7 @@
       releaseLock();
       hud.classList.add('is-hidden');
       spawnRingFx(player.pos, 7, C.cyan, 0.9, 1.0);
-      flashScreen();
+      flashScreen(0x6bffb0, true);
       addToast('断层突破 // 出口接入完成', 'good');
       showOverlay('won');
     }
@@ -5093,12 +6908,56 @@
       }
     }
 
+    // Conservative region bounce: keep the ambient intensity stable and only
+    // nudge its hue so the additive pools read as local colour instead of
+    // fighting a globally blue fill.  One shared Color instance, no per-frame
+    // allocation.
+    function updateRegionAmbient(dt) {
+      var hex = ambientTint.baseHex;
+      var intensity = 1.05;
+      var px = camera.position.x;
+      var pz = camera.position.z;
+      var phase = arenaMood ? arenaMood.phase : 0;
+      var nearExit = dist2D(camera.position, exit.pos) < 4.8;
+
+      if (nearExit) {
+        hex = exit.unlocked ? 0x466d5c : 0x5c4650;
+        intensity = 1.04;
+      } else if (pz > 7.5) {
+        // Cold cyan entry fill; the warm maintenance lamps stay as accents.
+        hex = 0x426f86;
+        intensity = 1.04;
+      } else if (Math.abs(px) > 14.5 && pz > -14.2) {
+        hex = 0x655042;
+        intensity = 1.02;
+      } else if (pz < -6.5) {
+        if (phase === 2) hex = 0x6a5a3f;
+        else if (phase === 3) hex = 0x653b3b;
+        else if (phase === 4) hex = 0x456d5c;
+        else hex = 0x42607a;
+        intensity = 1.03;
+      } else {
+        hex = 0x486b86;
+        intensity = 1.05;
+      }
+
+      ambientTint.target.setHex(hex);
+      var k = 1 - Math.exp(-Math.max(0, dt) * 1.8);
+      ambientLight.color.lerp(ambientTint.target, k);
+      ambientLight.intensity += (intensity - ambientLight.intensity) * k;
+    }
+
     function updateAmbient(dt) {
+      updateRegionAmbient(dt);
       for (var i = 0; i < motes.length; i++) {
         var m = motes[i];
         m.mesh.position.x = m.baseX + Math.sin(worldClock * m.speed * 0.3 + m.phase) * m.amp;
         m.mesh.position.y = m.baseY + Math.sin(worldClock * m.speed * 0.5 + m.phase) * 0.35;
         m.mesh.position.z = m.baseZ + Math.cos(worldClock * m.speed * 0.25 + m.phase) * m.amp;
+      }
+      for (i = 0; i < zoneGlowMats.length; i++) {
+        var zg = zoneGlowMats[i];
+        zg.mat.opacity = zg.base * (0.84 + 0.16 * (0.5 + 0.5 * Math.sin(worldClock * zg.speed + zg.phase)));
       }
       if (exit.ring) {
         exit.ring.rotation.z = Math.sin(worldClock * 0.9) * 0.12;
@@ -5107,6 +6966,18 @@
         exit.glowMat.opacity = (exit.unlocked ? 0.26 : 0.1) +
           Math.sin(worldClock * 2.2) * 0.035;
       }
+      if (exit.haloMat) {
+        exit.haloMat.opacity = (exit.unlocked ? 0.24 : 0.1) +
+          Math.sin(worldClock * 2.6 + 0.8) * 0.025;
+      }
+      if (exit.floorMat) {
+        exit.floorMat.opacity = (exit.unlocked ? 0.16 : 0.055) +
+          Math.sin(worldClock * 2.4 + 1.4) * 0.02;
+      }
+      updateContactShadows();
+      updateLocalLightRig();
+      updateCinematicVolumes();
+      updateReflectionStrips();
       updateArenaFx(dt);
     }
 
@@ -5150,6 +7021,8 @@
         updateParticles(dt);
       }
 
+      updateSparks(dt);
+      updateBulletTrails(dt);
       updateAmbient(dt);
       renderer.render(scene, camera);
     }
@@ -5197,6 +7070,84 @@
     }
 
     /* ---------------------------------------------------------------- boot */
+
+    // Read-only development hook used for smoke checks.  It allocates only when
+    // snapshot() is called and never touches the HUD or gameplay state.
+    window.__PB_LIGHTING__ = {
+      maxLocalLights: THREE.MAX_LOCAL_LIGHTS || 5,
+      shadowSlots: CONTACT_SHADOW_LIMIT,
+      snapshot: function () {
+        var out = [];
+        for (var i = 0; i < localLights.length; i++) {
+          var e = localLights[i];
+          out.push({
+            key: e.key,
+            visible: e.light.visible,
+            intensity: Math.round(e.light.intensity * 1000) / 1000,
+            distance: e.light.distance,
+            x: Math.round(e.light.position.x * 1000) / 1000,
+            y: Math.round(e.light.position.y * 1000) / 1000,
+            z: Math.round(e.light.position.z * 1000) / 1000
+          });
+        }
+        return out;
+      }
+    };
+
+    // Read-only development snapshot for the V3 cinematic FX layer.  It never
+    // exposes a gameplay toggle and only allocates when a reviewer calls it.
+    window.__PB_CINEMATIC_FX__ = {
+      version: 3,
+      caps: {
+        bulletVisuals: MAX.bullets,
+        bulletTrails: BULLET_TRAIL_LIMIT,
+        tracers: MAX.tracers,
+        hitSparks: SPARK_LIMIT,
+        rings: MAX.rings,
+        telegraphs: MAX.telegraphs,
+        lasers: MAX.lasers,
+        shockwaves: MAX.shockwaves,
+        volumetricBeams: VOLUME_BEAM_LIMIT,
+        reflectionStrips: REFLECTION_STRIP_LIMIT,
+        particles: MAX.particles,
+        localLights: THREE.MAX_LOCAL_LIGHTS || 5,
+        shadowSlots: CONTACT_SHADOW_LIMIT
+      },
+      snapshot: function () {
+        var activeSparks = 0;
+        var activeTrails = 0;
+        var activeVolumes = 0;
+        var activeStrips = 0;
+        var activeTracers = 0;
+        var activeRings = 0;
+        var i;
+        for (i = 0; i < sparkFxPool.length; i++) if (sparkFxPool[i].alive) activeSparks++;
+        for (i = 0; i < bulletTrailPool.length; i++) if (bulletTrailPool[i].owner) activeTrails++;
+        for (i = 0; i < tracerFxPool.length; i++) if (tracerFxPool[i].alive) activeTracers++;
+        for (i = 0; i < ringFxPool.length; i++) if (ringFxPool[i].alive) activeRings++;
+        for (i = 0; i < volumetricBeams.length; i++) if (volumetricBeams[i].group.visible) activeVolumes++;
+        for (i = 0; i < reflectionStrips.length; i++) if (reflectionStrips[i].mesh.visible) activeStrips++;
+        return {
+          mode: mode,
+          bullets: bullets.length,
+          tracers: activeTracers,
+          sparks: activeSparks,
+          bulletTrails: activeTrails,
+          rings: activeRings,
+          lasers: lasers.length,
+          laserPhase: lasers.length ? lasers[0].phase : 0,
+          shockwaves: shockwaves.length,
+          telegraphs: telegraphs.length,
+          volumetricBeams: activeVolumes,
+          reflectionStrips: activeStrips,
+          localLights: localLights.length,
+          shadowSlots: CONTACT_SHADOW_LIMIT,
+          batches: batchList.length,
+          volumesBuilt: volumetricBeams.length,
+          stripsBuilt: reflectionStrips.length
+        };
+      }
+    };
 
     buildArena();
     resetRunState();
