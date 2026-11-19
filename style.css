@@ -120,7 +120,7 @@ body {
   box-shadow: 0 0 8px var(--green);
 }
 
-.build { color: var(--dimmer); }
+.build { color: var(--dimmer); white-space: nowrap; }
 
 /* ------------------------------------------------------------------ stage */
 
@@ -175,6 +175,14 @@ body {
   outline: none;
   background: #02040a;
 }
+
+/* Quality profiles change only presentation scaling.  The renderer still owns
+   the real backbuffer size (1920x1080 / 960x540 / 640x360); these classes keep
+   texture detail legible at high resolution without discarding the pixel look. */
+body.render-high #scene { image-rendering: auto; }
+body.render-balanced #scene { image-rendering: pixelated; }
+body.render-high .scanlines { opacity: 0.32; }
+body.render-balanced .scanlines { opacity: 0.42; }
 
 /* --------------------------------------------------------------------- fx */
 

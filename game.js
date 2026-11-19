@@ -2,8 +2,10 @@
    PIXEL//BREACH — 断层突围
    A 3D pixel-styled first-person breach demo.
 
-   Rendering : 640x360 WebGL backbuffer, nearest-neighbour upscale (CSS)
-   Assets    : none — procedural geometry, materials and lights only
+   Rendering : High 1920x1080 WebGL2 / Balanced 960x540 / Fallback 640x360
+               backbuffer (16:9), CSS presentation scaled to the viewport;
+               WebGL1 picks a uniform-budget-safe shader/light count at startup
+   Assets    : none — procedural geometry, materials, Canvas2D atlas and lights
    Network   : none. vendor/three.min.js is a local offline build.
    ========================================================================== */
 
@@ -11,8 +13,10 @@
   'use strict';
 
   var VENDOR_SRC = 'vendor/three.min.js';
-  var RES_W = 640;
-  var RES_H = 360;
+  // Actual values are assigned from the selected quality profile in start().
+  // They are never larger than the backend's reported viewport limits.
+  var RES_W = 960;
+  var RES_H = 540;
 
   function byId(id) {
     return document.getElementById(id);
@@ -50,7 +54,7 @@
     loadVendor().then(start).catch(function (err) {
       console.error('[PIXEL//BREACH]', err);
       fatal('本地 3D 依赖加载失败：' + (err && err.message ? err.message : String(err)) +
-        '。请确认 games/pixel-breach/vendor/three.min.js 存在。');
+        '。请确认 vendor/three.min.js 存在。');
     });
   }
 
@@ -122,32 +126,152 @@
 
     /* ------------------------------------------------------------ renderer */
 
+    // High is the default on capable WebGL2 devices. Profile selection only
+    // controls the presentation and the dimensions of the backbuffer.
+    var qualityRequested = 'high';
+    try {
+      var qm = /[?&]quality=(high|balanced|fallback)\b/i.exec(window.location.search || '');
+      if (qm) qualityRequested = qm[1].toLowerCase();
+    } catch (errQuality) {
+      qualityRequested = 'high';
+    }
+
     var renderer;
     try {
-      renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: false });
+      renderer = new THREE.WebGLRenderer({
+        canvas: canvas,
+        antialias: false,
+        quality: qualityRequested
+      });
     } catch (err) {
       console.error('[PIXEL//BREACH] renderer', err);
-      fatal('无法创建 WebGL 上下文：' + (err && err.message ? err.message : String(err)));
+      fatal('无法初始化 WebGL 渲染器：' + (err && err.message ? err.message : String(err)));
       return;
     }
+
+    var QUALITY_PROFILES = {
+      high: {
+        name: 'high', width: 1920, height: 1080,
+        maxLocalLights: 8, visualDetail: 1.0, textureMix: 1.0,
+        extraDetail: true, contactShadows: 12
+      },
+      balanced: {
+        name: 'balanced', width: 960, height: 540,
+        maxLocalLights: 5, visualDetail: 0.85, textureMix: 0.85,
+        extraDetail: true, contactShadows: 12
+      },
+      fallback: {
+        name: 'fallback', width: 640, height: 360,
+        maxLocalLights: 4, visualDetail: 0.5, textureMix: 0.55,
+        extraDetail: false, contactShadows: 6
+      }
+    };
+
+    function profileFitsBackend(def) {
+      if (!renderer.isWebGL2) return false;
+      var caps = renderer.capabilities || {};
+      return (renderer.maxRenderWidth || 0) >= def.width &&
+        (renderer.maxRenderHeight || 0) >= def.height &&
+        (caps.maxTextureSize || 0) >= (def.name === 'high' ? 2048 : 256) &&
+        (caps.maxFragmentUniformVectors || 0) >= 48;
+    }
+
+    function chooseQualityProfile(requested) {
+      var high = QUALITY_PROFILES.high;
+      var balanced = QUALITY_PROFILES.balanced;
+      var fallback = QUALITY_PROFILES.fallback;
+      if (!renderer.isWebGL2) {
+        return {
+          profile: fallback,
+          reason: 'WebGL1 context: Fallback profile enforced at 640x360.'
+        };
+      }
+      if (requested === 'fallback') {
+        return {
+          profile: fallback,
+          reason: 'Fallback requested explicitly at 640x360.'
+        };
+      }
+      if (requested === 'high') {
+        if (profileFitsBackend(high)) {
+          return {
+            profile: high,
+            reason: 'WebGL2 and backend limits support 1920x1080.'
+          };
+        }
+        if (profileFitsBackend(balanced)) {
+          return {
+            profile: balanced,
+            reason: 'High target limits were not met; running Balanced at 960x540.'
+          };
+        }
+        return {
+          profile: fallback,
+          reason: 'High requested, but even 960x540 was unsafe; degraded to 640x360.'
+        };
+      }
+      if (profileFitsBackend(balanced)) {
+        return { profile: balanced, reason: 'Balanced requested at 960x540.' };
+      }
+      return {
+        profile: fallback,
+        reason: 'Balanced requested, but 960x540 was unsafe; degraded to 640x360.'
+      };
+    }
+
+    var qualitySelection = chooseQualityProfile(qualityRequested);
+    var selectedProfile = qualitySelection.profile;
+    renderer.setQuality(selectedProfile.name);
     renderer.setPixelRatio(1);
-    renderer.setSize(RES_W, RES_H);
+    renderer.setSize(selectedProfile.width, selectedProfile.height);
+    if (selectedProfile.name === 'high' && !renderer.profile.highVisuals) {
+      qualitySelection = chooseQualityProfile('balanced');
+      qualitySelection.reason = 'High initialization failed: ' + renderer.highError;
+      selectedProfile = qualitySelection.profile;
+      renderer.setQuality(selectedProfile.name);
+      renderer.setSize(selectedProfile.width, selectedProfile.height);
+    }
+    RES_W = selectedProfile.width;
+    RES_H = selectedProfile.height;
+    var highVisuals = renderer.profile.highVisuals;
+    try {
+      if (document.body) document.body.classList.add('render-' + selectedProfile.name);
+      if (canvas) canvas.setAttribute('data-quality', selectedProfile.name);
+    } catch (errClass) { /* presentation class is optional */ }
+
+    var QUALITY = {
+      requested: qualityRequested,
+      name: selectedProfile.name,
+      backend: renderer.backend,
+      width: RES_W,
+      height: RES_H,
+      reason: qualitySelection.reason,
+      degraded: selectedProfile.name !== qualityRequested,
+      shaderVariant: renderer.profile.shaderVariant || 'full',
+      maxLocalLights: Math.min(renderer.maxLocalLights, selectedProfile.maxLocalLights),
+      visualDetail: selectedProfile.visualDetail,
+      textureMix: selectedProfile.textureMix,
+      extraDetail: selectedProfile.extraDetail,
+      contactShadows: selectedProfile.contactShadows
+    };
 
     var scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1b1228);
-    scene.fog = new THREE.Fog(0x6b3c4e, 21, 82);
+    scene.fog = new THREE.Fog(0x744353, 22, 92);
 
     var camera = new THREE.PerspectiveCamera(74, RES_W / RES_H, 0.06, 160);
     scene.add(camera);
 
-    var ambientLight = new THREE.AmbientLight(0x414f8c, 1.02);
+    var duskFill = highVisuals ? 0x617da9 : 0x3f4f92;
+    var ambientLight = new THREE.AmbientLight(duskFill, highVisuals ? 1.13 : 1.08);
     scene.add(ambientLight);
     var ambientTint = {
-      target: new THREE.Color(0x414f8c),
-      baseHex: 0x414f8c
+      target: new THREE.Color(duskFill),
+      baseHex: duskFill
     };
-    var sun = new THREE.DirectionalLight(0xffae62, 1.38);
-    sun.position.set(-0.66, 0.4, 0.55);
+    var sun = new THREE.DirectionalLight(highVisuals ? 0xffa96b : 0xffa85c, highVisuals ? 2.85 : 1.46);
+    if (highVisuals) sun.position.set(-0.50, 0.245, -0.86);
+    else sun.position.set(-0.72, 0.38, 0.52);
     scene.add(sun);
 
     /* ------------------------------------------------------------- palette */
@@ -169,6 +293,19 @@
       wallDark: 0x22252b,
       steel: 0x4b5560,
       gun: 0x8ea6bd
+    };
+
+    // Shared 4x2 surface-atlas slots.  Every material points at one of these;
+    // the atlas itself is one Canvas2D image uploaded once by the renderer.
+    var DETAIL_TILE = {
+      metal: 0,
+      rust: 1,
+      concrete: 2,
+      wood: 3,
+      paint: 4,
+      chips: 5,
+      water: 6,
+      grime: 7
     };
 
     function matBasic(hex, opts) {
@@ -217,11 +354,11 @@
     /* ================================================================== *
      * Industrial pixel-art kit
      *
-     * The local renderer is the project's Three.js-compatible subset; it has
-     * no sampler/Texture class.  Instead of pretending otherwise, surface
-     * patterns are generated into a tiny local Canvas2D atlas and then baked
-     * into merged low-poly "pixel chips".  That keeps the nearest-neighbour
-     * look, stays fully offline, and yields stable deterministic detail.
+     * The local renderer is the project's Three.js-compatible subset.  Surface
+     * patterns are generated into tiny local Canvas2D atlases.  Sparse patterns
+     * are baked into merged low-poly "pixel chips"; V5.1 additionally uploads
+     * one shared surface atlas for real triplanar sampler detail.  Both paths
+     * stay fully offline and deterministic.
      * ====================================================================== */
 
     var ART_SEED = 0x07b5ea1;
@@ -247,14 +384,14 @@
     // Shared industrial palette.  Lambert materials carry the form, the
     // unlit entries are paint / signage / phosphor that must stay readable.
     var IM = {
-      steel: matLambert(0x56636e, { specular: 0.56, roughness: 0.32 }),
-      steel2: matLambert(0x74808a, { specular: 0.68, roughness: 0.26 }),
-      steelDark: matLambert(0x343d45, { specular: 0.38, roughness: 0.42 }),
-      steelDeep: matLambert(0x20272e, { specular: 0.24, roughness: 0.54 }),
-      concrete: matLambert(0x6a6b62, { specular: 0.08, roughness: 0.88 }),
-      concrete2: matLambert(0x7a7b72, { specular: 0.1, roughness: 0.84 }),
-      concreteDark: matLambert(0x4a4c46, { specular: 0.07, roughness: 0.9 }),
-      concreteLight: matLambert(0x8a8a80, { specular: 0.13, roughness: 0.8 }),
+      steel: matLambert(0x56636e, { specular: 0.56, roughness: 0.32, specularColor: 0xffd9b8 }),
+      steel2: matLambert(0x74808a, { specular: 0.68, roughness: 0.26, specularColor: 0xffe2c4 }),
+      steelDark: matLambert(0x343d45, { specular: 0.38, roughness: 0.42, specularColor: 0xffc9a0 }),
+      steelDeep: matLambert(0x20272e, { specular: 0.24, roughness: 0.54, specularColor: 0xffc090 }),
+      concrete: matLambert(0x6a6b62, { specular: 0.08, roughness: 0.88, specularColor: 0xffd0a8 }),
+      concrete2: matLambert(0x7a7b72, { specular: 0.1, roughness: 0.84, specularColor: 0xffd0a8 }),
+      concreteDark: matLambert(0x4a4c46, { specular: 0.07, roughness: 0.9, specularColor: 0xffc89c }),
+      concreteLight: matLambert(0x8a8a80, { specular: 0.13, roughness: 0.8, specularColor: 0xffd8b0 }),
       rust: matLambert(0x8b4c30, { specular: 0.2, roughness: 0.72, specularColor: 0xffbb80 }),
       rustDark: matLambert(0x583226, { specular: 0.14, roughness: 0.8, specularColor: 0xffa070 }),
       rustLight: matLambert(0xad663d, { specular: 0.26, roughness: 0.66, specularColor: 0xffcf9a }),
@@ -278,16 +415,16 @@
 
       // Outdoor dockyard palette.  Container paint is deliberately muted so
       // the low sun and blue dusk fill still carry the colour, while the
-      // silhouettes stay readable at 640x360.
-      asphalt: matLambert(0x34343a, { specular: 0.22, roughness: 0.72 }),
-      asphaltWarm: matLambert(0x403a3b, { specular: 0.26, roughness: 0.66 }),
-      quay: matLambert(0x5d5953, { specular: 0.1, roughness: 0.88 }),
-      containerRed: matLambert(0x9c4038, { specular: 0.28, roughness: 0.56 }),
-      containerBlue: matLambert(0x2f5a75, { specular: 0.3, roughness: 0.54 }),
-      containerGreen: matLambert(0x39604b, { specular: 0.26, roughness: 0.58 }),
-      containerOrange: matLambert(0xa55f2e, { specular: 0.3, roughness: 0.52 }),
-      containerPurple: matLambert(0x5b4670, { specular: 0.26, roughness: 0.58 }),
-      containerTeal: matLambert(0x306260, { specular: 0.3, roughness: 0.54 }),
+      // silhouettes stay readable at every internal resolution.
+      asphalt: matLambert(0x34343a, { specular: 0.22, roughness: 0.72, specularColor: 0xffc48a }),
+      asphaltWarm: matLambert(0x403a3b, { specular: 0.26, roughness: 0.66, specularColor: 0xffb878 }),
+      quay: matLambert(0x5d5953, { specular: 0.1, roughness: 0.88, specularColor: 0xffd8a8 }),
+      containerRed: matLambert(0x9c4038, { specular: 0.28, roughness: 0.56, specularColor: 0xffd2aa }),
+      containerBlue: matLambert(0x2f5a75, { specular: 0.3, roughness: 0.54, specularColor: 0xffd2aa }),
+      containerGreen: matLambert(0x39604b, { specular: 0.26, roughness: 0.58, specularColor: 0xffd2aa }),
+      containerOrange: matLambert(0xa55f2e, { specular: 0.3, roughness: 0.52, specularColor: 0xffd2aa }),
+      containerPurple: matLambert(0x5b4670, { specular: 0.26, roughness: 0.58, specularColor: 0xffd2aa }),
+      containerTeal: matLambert(0x306260, { specular: 0.3, roughness: 0.54, specularColor: 0xffd2aa }),
       water: matLambert(0x1a2b46, { specular: 0.82, roughness: 0.18, specularColor: 0xffc890 }),
       waterGlint: matBasic(0xffb066, {
         transparent: true, opacity: 0.14, blending: 'additive', depthWrite: false, fog: false
@@ -343,6 +480,137 @@
       })
     };
 
+    // V5.1 PBR-lite tuning.  Every value is a shared material property, set once
+    // before the scene is built.  The renderer turns these into an AO term, a
+    // metal diffuse/specular trade and a world-space pixel grain; this is a
+    // readable approximation, not a physically based BRDF.
+    function tuneSurface(mat, ao, metalness, detail) {
+      if (!mat) return;
+      mat.ao = ao;
+      mat.metalness = metalness;
+      mat.detail = detail;
+    }
+
+    // Tags a shared material with an atlas slot + surface tiling.  The
+    // per-quality texture mix is applied here at startup; no material or
+    // texture object is created later.
+    function tuneTexture(mat, tile, scale, mix) {
+      if (!mat) return;
+      mat.textureTile = tile;
+      mat.textureScale = scale;
+      mat.textureMix = Math.max(0, Math.min(1,
+        mix * (QUALITY.textureMix === undefined ? 1 : QUALITY.textureMix)));
+    }
+    tuneSurface(IM.steel, 0.94, 0.68, 0.32);
+    tuneSurface(IM.steel2, 0.96, 0.82, 0.28);
+    tuneSurface(IM.steelDark, 0.9, 0.55, 0.4);
+    tuneSurface(IM.steelDeep, 0.84, 0.45, 0.36);
+    tuneSurface(IM.concrete, 0.88, 0.02, 0.72);
+    tuneSurface(IM.concrete2, 0.9, 0.02, 0.68);
+    tuneSurface(IM.concreteDark, 0.84, 0.02, 0.78);
+    tuneSurface(IM.concreteLight, 0.92, 0.03, 0.62);
+    tuneSurface(IM.rust, 0.86, 0.16, 0.82);
+    tuneSurface(IM.rustDark, 0.82, 0.12, 0.86);
+    tuneSurface(IM.rustLight, 0.86, 0.18, 0.76);
+    tuneSurface(IM.copper, 0.92, 0.9, 0.24);
+    tuneSurface(IM.brass, 0.9, 0.86, 0.22);
+    tuneSurface(IM.black, 0.78, 0.2, 0.42);
+    tuneSurface(IM.cable, 0.8, 0.15, 0.5);
+    tuneSurface(IM.oil, 0.72, 0.38, 0.34);
+    tuneSurface(IM.asphalt, 0.9, 0.08, 0.78);
+    tuneSurface(IM.asphaltWarm, 0.9, 0.1, 0.74);
+    tuneSurface(IM.quay, 0.88, 0.04, 0.66);
+    tuneSurface(IM.containerRed, 0.9, 0.34, 0.6);
+    tuneSurface(IM.containerBlue, 0.9, 0.36, 0.58);
+    tuneSurface(IM.containerGreen, 0.9, 0.32, 0.62);
+    tuneSurface(IM.containerOrange, 0.9, 0.34, 0.64);
+    tuneSurface(IM.containerPurple, 0.9, 0.32, 0.6);
+    tuneSurface(IM.containerTeal, 0.9, 0.34, 0.58);
+    tuneSurface(IM.water, 0.72, 0.42, 0.18);
+    tuneSurface(IM.fenceDark, 0.86, 0.45, 0.42);
+    tuneSurface(MAT.wall, 0.9, 0.18, 0.5);
+    tuneSurface(MAT.wallDark, 0.86, 0.15, 0.52);
+    tuneSurface(MAT.floor, 0.88, 0.24, 0.6);
+    tuneSurface(MAT.ceiling, 0.7, 0.08, 0.3);
+    tuneSurface(MAT.cover, 0.86, 0.4, 0.38);
+
+    // V5.1 sampler assignments.  These are shared material tags, not extra
+    // textures: the renderer binds one atlas and each draw selects a tile.
+    tuneTexture(IM.steel, DETAIL_TILE.metal, 0.55, 0.85);
+    tuneTexture(IM.steel2, DETAIL_TILE.metal, 0.62, 0.9);
+    tuneTexture(IM.steelDark, DETAIL_TILE.metal, 0.58, 0.8);
+    tuneTexture(IM.steelDeep, DETAIL_TILE.metal, 0.66, 0.7);
+    tuneTexture(IM.concrete, DETAIL_TILE.concrete, 0.28, 0.85);
+    tuneTexture(IM.concrete2, DETAIL_TILE.concrete, 0.25, 0.8);
+    tuneTexture(IM.concreteDark, DETAIL_TILE.concrete, 0.31, 0.9);
+    tuneTexture(IM.concreteLight, DETAIL_TILE.concrete, 0.23, 0.75);
+    tuneTexture(IM.rust, DETAIL_TILE.rust, 0.66, 0.9);
+    tuneTexture(IM.rustDark, DETAIL_TILE.rust, 0.72, 0.9);
+    // rustLight is the shared warm-brown material used by pallet planks and
+    // timber trim, so it carries the wood tile; the darker rust materials keep
+    // the pitted-metal tile.
+    tuneTexture(IM.rustLight, DETAIL_TILE.wood, 0.62, 0.72);
+    tuneTexture(IM.copper, DETAIL_TILE.metal, 0.78, 0.6);
+    tuneTexture(IM.brass, DETAIL_TILE.metal, 0.74, 0.6);
+    tuneTexture(IM.black, DETAIL_TILE.chips, 0.9, 0.4);
+    tuneTexture(IM.cable, DETAIL_TILE.grime, 1.0, 0.4);
+    tuneTexture(IM.oil, DETAIL_TILE.grime, 0.7, 0.5);
+    tuneTexture(IM.asphalt, DETAIL_TILE.concrete, 0.33, 0.9);
+    tuneTexture(IM.asphaltWarm, DETAIL_TILE.concrete, 0.3, 0.85);
+    tuneTexture(IM.quay, DETAIL_TILE.concrete, 0.42, 0.8);
+    tuneTexture(IM.containerRed, DETAIL_TILE.paint, 0.42, 0.8);
+    tuneTexture(IM.containerBlue, DETAIL_TILE.paint, 0.42, 0.8);
+    tuneTexture(IM.containerGreen, DETAIL_TILE.paint, 0.42, 0.8);
+    tuneTexture(IM.containerOrange, DETAIL_TILE.paint, 0.42, 0.8);
+    tuneTexture(IM.containerPurple, DETAIL_TILE.paint, 0.42, 0.8);
+    tuneTexture(IM.containerTeal, DETAIL_TILE.paint, 0.42, 0.8);
+    tuneTexture(IM.water, DETAIL_TILE.water, 0.18, 0.75);
+    tuneTexture(IM.fenceDark, DETAIL_TILE.metal, 0.7, 0.7);
+    tuneTexture(MAT.wall, DETAIL_TILE.concrete, 0.36, 0.7);
+    tuneTexture(MAT.wallDark, DETAIL_TILE.concrete, 0.4, 0.6);
+    tuneTexture(MAT.floor, DETAIL_TILE.concrete, 0.38, 0.85);
+    tuneTexture(MAT.ceiling, DETAIL_TILE.metal, 0.55, 0.35);
+    tuneTexture(MAT.cover, DETAIL_TILE.metal, 0.45, 0.6);
+
+    if (highVisuals) {
+      IM.cranePaint = matLambert(0xc58a30, { roughness: 0.47, specular: 0.45, metalness: 0.32, ao: 0.94 });
+      IM.craneIvory = matLambert(0xc9c7ac, { roughness: 0.49, specular: 0.39, metalness: 0.16 });
+      IM.casting = matLambert(0xa3a8a1, { roughness: 0.31, specular: 0.57, metalness: 0.62 });
+      IM.cabGlass = matLambert(0x24546b, { roughness: 0.13, specular: 0.96, metalness: 0.46, surfaceType: 1 });
+      IM.wet = matLambert(0x222237, { roughness: 0.12, specular: 0.77, ao: 0.88, bump: 0.45, surfaceType: 1 });
+      IM.track = matLambert(0x272832, { roughness: 0.91, specular: 0.05, ao: 0.91 });
+      IM.stencil = matLambert(0xd5cbb2, { roughness: 0.83, specular: 0.1, bump: 0.4 });
+      IM.railPaint = matLambert(0xc89844, { roughness: 0.70, specular: 0.23, bump: 0.55 });
+      IM.water.surfaceType = 2;
+      IM.lampWarm.radiance = 3.9;
+      IM.lampCool.radiance = 3.6;
+      IM.lampRed.radiance = 3.9;
+      IM.screen.radiance = 1.55;
+      IM.fxLine.radiance = 1.9;
+      IM.fxPylon.radiance = 2.9;
+      IM.fxAlarm.radiance = 2.6;
+      MAT.portalOpen.radiance = 2.6;
+      MAT.portalLocked.radiance = 2.15;
+      IM.containerRed.color.setHex(0xad584e);
+      IM.containerBlue.color.setHex(0x3d7d97);
+      IM.containerGreen.color.setHex(0x527f67);
+      IM.containerOrange.color.setHex(0xbe7d36);
+      IM.containerPurple.color.setHex(0x706384);
+      IM.containerTeal.color.setHex(0x367f7f);
+      IM.asphalt.color.setHex(0x55555c);
+      IM.asphaltWarm.color.setHex(0x635c55);
+      IM.quay.color.setHex(0x7a756e);
+      IM.black.roughness = 0.94;
+      IM.rustLight.roughness = 0.84;
+      tuneTexture(IM.cranePaint, DETAIL_TILE.paint, 0.46, 0.94);
+      tuneTexture(IM.craneIvory, DETAIL_TILE.paint, 0.52, 0.8);
+      tuneTexture(IM.casting, DETAIL_TILE.chips, 0.84, 0.83);
+      tuneTexture(IM.track, DETAIL_TILE.grime, 0.82, 0.88);
+      tuneTexture(IM.stencil, DETAIL_TILE.paint, 0.76, 0.73);
+      tuneTexture(IM.railPaint, DETAIL_TILE.paint, 0.55, 0.9);
+      tuneTexture(IM.wet, DETAIL_TILE.water, 0.45, 0.81);
+    }
+
     var zoneGlowMats = [
       { mat: IM.glowWarm, base: 0.05, speed: 0.7, phase: 0.4 },
       { mat: IM.glowWarmCore, base: 0.09, speed: 0.9, phase: 1.7 },
@@ -359,8 +627,8 @@
 
     /* -------------------------------------------------- local pixel patterns */
 
-    function makePixelTexture(seed, palette, mode) {
-      var size = 16;
+    function makePixelTexture(seed, palette, mode, sizeOverride) {
+      var size = sizeOverride || 16;
       var canvas = document.createElement('canvas');
       canvas.width = size;
       canvas.height = size;
@@ -430,6 +698,39 @@
         for (y = 2; y < size; y += 6) {
           ctx.fillStyle = palette[2].hex;
           ctx.fillRect(0, y, size, 1);
+        }
+      } else if (mode === 'sparse') {
+        // Sparse "decal atlas": most texels use the last palette entry as a
+        // transparency sentinel, so a shared atlas can add panel seams, rust
+        // blooms and wear without repainting the whole surface.
+        var skipEntry = palette[palette.length - 1];
+        ctx.fillStyle = skipEntry.hex;
+        ctx.fillRect(0, 0, size, size);
+        for (x = 0; x < size; x += 8) {
+          ctx.fillStyle = palette[1].hex;
+          ctx.fillRect(x, 0, 1, size);
+        }
+        for (y = 0; y < size; y += 9) {
+          ctx.fillStyle = palette[2].hex;
+          ctx.fillRect(0, y, size, 1);
+        }
+        for (i = 0; i < 18; i++) {
+          x = Math.floor(rng() * size);
+          y = Math.floor(rng() * size);
+          ctx.fillStyle = palette[i % 4 === 0 ? 4 : 0].hex;
+          ctx.fillRect(x, y, 1 + Math.floor(rng() * 4), 1);
+        }
+        for (i = 0; i < 8; i++) {
+          x = Math.floor(rng() * size);
+          y = Math.floor(rng() * size);
+          ctx.fillStyle = palette[3].hex;
+          ctx.fillRect(x, y, 1 + Math.floor(rng() * 3), 1 + Math.floor(rng() * 2));
+        }
+        for (i = 0; i < 5; i++) {
+          x = Math.floor(rng() * size);
+          y = Math.floor(rng() * 8);
+          ctx.fillStyle = palette[5].hex;
+          ctx.fillRect(x, y, 1, 3 + Math.floor(rng() * 7));
         }
       } else {
         ctx.strokeStyle = palette[1].hex;
@@ -507,13 +808,250 @@
         { hex: '#56636e', key: 'steel2' },
         { hex: '#74808a', key: 'steel2' },
         { hex: '#8b4c30', key: 'rust' }
-      ], 'plate')
+      ], 'plate'),
+      // V5 shared decal atlases.  These are painted sparsely over existing
+      // surfaces; the last palette entry is a skip sentinel, so the atlas adds
+      // seams, oil, rust blooms and chipped paint without replacing albedo.
+      containerDetail: makePixelTexture(ART_SEED + 67, [
+        { hex: '#343d45', key: 'steelDark' },
+        { hex: '#20272e', key: 'steelDeep' },
+        { hex: '#8b4c30', key: 'rust' },
+        { hex: '#583226', key: 'rustDark' },
+        { hex: '#1e2321', key: 'oil' },
+        { hex: '#74808a', key: 'steel2' },
+        { hex: '#ff00ff', key: null, skip: true }
+      ], 'sparse', 32),
+      dockDetail: makePixelTexture(ART_SEED + 79, [
+        { hex: '#1e2321', key: 'oil' },
+        { hex: '#20272e', key: 'steelDeep' },
+        { hex: '#583226', key: 'rustDark' },
+        { hex: '#8b4c30', key: 'rust' },
+        { hex: '#56636e', key: 'steel' },
+        { hex: '#74808a', key: 'steel2' },
+        { hex: '#ff00ff', key: null, skip: true }
+      ], 'sparse', 32),
+      woodDetail: makePixelTexture(ART_SEED + 83, [
+        { hex: '#ad663d', key: 'rustLight' },
+        { hex: '#583226', key: 'rustDark' },
+        { hex: '#8b4c30', key: 'rust' },
+        { hex: '#74808a', key: 'steel2' },
+        { hex: '#1e2321', key: 'oil' },
+        { hex: '#ad663d', key: 'rustLight' },
+        { hex: '#ff00ff', key: null, skip: true }
+      ], 'sparse', 16)
     };
+
+    // V5.1 shared surface sampler.  A single 256x128 Canvas2D atlas holds eight
+    // 64x64 tiles.  R is micro contrast, G is the metal/rough mask and B is the
+    // grime/AO mask; the renderer samples it in world-space triplanar coordinates,
+    // so arbitrary procedural boxes get real texel detail without UV attributes.
+    // All noise octaves use an exact whole number of cells across a 64 px tile,
+    // which keeps the patterns seamless and deterministic.
+    function periodicNoise(x, y, period, seed) {
+      var gx = Math.floor(x);
+      var gy = Math.floor(y);
+      var fx = x - gx;
+      var fy = y - gy;
+      fx = fx * fx * (3 - 2 * fx);
+      fy = fy * fy * (3 - 2 * fy);
+      function cell(ix, iy) {
+        var wx = ((ix % period) + period) % period;
+        var wy = ((iy % period) + period) % period;
+        return hash2(wx + seed * 17.13, wy + seed * 9.71);
+      }
+      var x0 = gx;
+      var x1 = gx + 1;
+      var y0 = gy;
+      var y1 = gy + 1;
+      var a = cell(x0, y0);
+      var b = cell(x1, y0);
+      var c = cell(x0, y1);
+      var d = cell(x1, y1);
+      var ab = a + (b - a) * fx;
+      var cd = c + (d - c) * fx;
+      return ab + (cd - ab) * fy;
+    }
+
+    function makeSurfaceDetailAtlas() {
+      var tile = 64;
+      var cols = 4;
+      var rows = 2;
+      var canvas = document.createElement('canvas');
+      canvas.width = tile * cols;
+      canvas.height = tile * rows;
+      var ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      var img = ctx.createImageData(canvas.width, canvas.height);
+      var data = img.data;
+      var styles = ['metal', 'rust', 'concrete', 'wood', 'paint', 'chips', 'water', 'grime'];
+      function byte(v) { return v < 0 ? 0 : (v > 255 ? 255 : Math.round(v)); }
+      for (var idx = 0; idx < styles.length; idx++) {
+        var style = styles[idx];
+        var ox = (idx % cols) * tile;
+        var oy = Math.floor(idx / cols) * tile;
+        for (var y = 0; y < tile; y++) {
+          for (var x = 0; x < tile; x++) {
+            var n1 = periodicNoise(x / 8, y / 8, 8, idx + 1);
+            var n2 = periodicNoise(x / 4, y / 4, 16, idx + 11);
+            var n3 = periodicNoise(x / 16, y / 16, 4, idx + 23);
+            var r = 128;
+            var g = 128;
+            var b = 128;
+            if (style === 'metal') {
+              var brush = Math.sin((y * 6 + x * 2) * 0.09817477 + n1 * 4.2);
+              r = 128 + brush * 15 + (n2 - 0.5) * 18;
+              g = 136 + brush * 13 + (n1 - 0.5) * 14;
+              b = 206 + (n3 - 0.5) * 18 - Math.abs(brush) * 6;
+            } else if (style === 'rust') {
+              var rust = Math.max(0, Math.min(1, (n1 - 0.52) / 0.22));
+              rust = rust * rust * (3 - 2 * rust);
+              r = 112 + (n2 - 0.5) * 54 + rust * 24;
+              g = 94 + (n2 - 0.5) * 38 + rust * 10;
+              b = 150 + (n1 - 0.5) * 90 - rust * 34;
+            } else if (style === 'concrete') {
+              r = 126 + (n2 - 0.5) * 34 + (n3 - 0.5) * 14;
+              g = 116 + (n1 - 0.5) * 24 + (n3 - 0.5) * 10;
+              b = 188 + (n1 - 0.5) * 34;
+            } else if (style === 'wood') {
+              var grain = Math.sin(x * 11 * 0.09817477 + n1 * 3.4 + n2 * 1.7);
+              r = 136 + grain * 24 + (n2 - 0.5) * 16;
+              g = 108 + grain * 8;
+              b = 176 + (n1 - 0.5) * 26;
+            } else if (style === 'paint') {
+              var rib = (x % 8) < 2 ? -12 : 5;
+              var scratch = n2 > 0.72 ? -22 : 0;
+              r = 128 + rib + scratch + (n1 - 0.5) * 14;
+              g = 128 + rib * 0.7 + scratch * 0.7;
+              b = 198 + (n1 - 0.5) * 18;
+            } else if (style === 'chips') {
+              var chip = n1 > 0.63 ? -26 : 0;
+              r = 126 + (n2 - 0.5) * 26 + chip;
+              g = 120 + (n2 - 0.5) * 18 + chip * 0.7;
+              b = 188 + (n1 - 0.5) * 30;
+            } else if (style === 'water') {
+              var streak = Math.sin(y * 12 * 0.09817477 + n1 * 2.6);
+              r = 118 + streak * 16;
+              g = 154 + streak * 18;
+              b = 208 + streak * 10;
+            } else {
+              var stain = Math.max(0, Math.min(1, (n1 - 0.45) / 0.55));
+              r = 124 + (n2 - 0.5) * 20 - stain * 20;
+              g = 116 + (n2 - 0.5) * 16 - stain * 12;
+              b = 196 - stain * 64 + (n3 - 0.5) * 18;
+            }
+            var di = ((oy + y) * canvas.width + (ox + x)) * 4;
+            data[di] = byte(r);
+            data[di + 1] = byte(g);
+            data[di + 2] = byte(b);
+            data[di + 3] = 255;
+          }
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      return canvas;
+    }
+
+    function makeSurfaceLayers() {
+      var size = 256;
+      var count = 8;
+      var albedo = new Uint8ClampedArray(size * size * 4 * count);
+      var finish = new Uint8ClampedArray(albedo.length);
+      var height = new Float32Array(size * size);
+      var wrap = size - 1;
+      for (var layer = 0; layer < count; layer++) {
+        for (var y = 0; y < size; y++) {
+          for (var x = 0; x < size; x++) {
+            var broad = periodicNoise(x / 32, y / 32, 8, layer + 2);
+            var chips = periodicNoise(x / 8, y / 8, 32, layer + 19);
+            var grain = hash2(x + layer * 251, y + layer * 797);
+            var grainLine = periodicNoise(x / 2, y / 8, 128, layer + 9);
+            var value, warmth, relief, rough, contact;
+            switch (layer) {
+              case DETAIL_TILE.metal: {
+                var brush = Math.max(0, Math.sin(y * Math.PI / 4 + broad) * 0.4 + grain * 0.6 - 0.43);
+                value = 133 + 30 * broad + brush * 56 - chips * 23;
+                warmth = -5; relief = brush * 0.23 + 0.3 * chips; rough = 97 + 76 * chips + brush * 58; contact = 218 + 34 * broad;
+                break;
+              }
+              case DETAIL_TILE.rust:
+                value = 72 + broad * 66 + chips * 51 + grain * 25;
+                warmth = 42 * (0.2 + chips); relief = 0.48 * chips + 0.18 * grain; rough = 158 + 80 * chips; contact = 155 + 79 * broad;
+                break;
+              case DETAIL_TILE.concrete: {
+                var pore = grain > 0.91 ? (grain - 0.91) * 8 : 0;
+                value = 105 + broad * 65 + chips * 32 + grain * 25 - pore * 71;
+                warmth = 3 + broad * 8; relief = 0.34 * chips + 0.18 * grain - pore * 0.49; rough = 166 + 43 * broad; contact = 208 + 34 * chips - pore * 55;
+                break;
+              }
+              case DETAIL_TILE.wood: {
+                var fiber = Math.sin(2 * Math.PI * y * 21 / size + broad * 5.2 + chips * 0.8);
+                var knot = Math.max(0, fiber - 0.52);
+                value = 127 + broad * 27 + fiber * 32 - knot * grain * 49;
+                warmth = 24; relief = fiber * 0.21 + broad * 0.24; rough = 165 + 44 * chips; contact = 216 + fiber * 19;
+                break;
+              }
+              case DETAIL_TILE.paint: {
+                var peel = Math.max(0, (chips * 0.68 + grainLine * 0.25 + broad * 0.25 - 0.76) * 4.1);
+                value = 143 + broad * 43 + grain * 16 - 114 * peel - grainLine * 22;
+                warmth = 4 + peel * 48; relief = chips * 0.12 - peel * 0.48; rough = 96 + broad * 54 + peel * 80; contact = 246 - peel * 104;
+                break;
+              }
+              case DETAIL_TILE.chips:
+                value = 115 + broad * 34 + chips * 43 + (grain > 0.96 ? 51 : grain * 23);
+                warmth = -4; relief = 0.33 * chips + 0.15 * grain; rough = 110 + 90 * chips; contact = 180 + chips * 66;
+                break;
+              case DETAIL_TILE.water:
+                value = 137 + 35 * broad; warmth = -12; relief = chips * 0.14; rough = 78 + 32 * chips; contact = 250;
+                break;
+              default:
+                value = 87 + broad * 52 + chips * 29 + 28 * grain;
+                warmth = 1; relief = chips * 0.20 + grain * 0.32; rough = 176 + broad * 61; contact = 192 + broad * 52;
+            }
+            var index = (layer * size * size + y * size + x) * 4;
+            albedo[index] = value + warmth * 0.56;
+            albedo[index + 1] = value;
+            albedo[index + 2] = value - warmth;
+            albedo[index + 3] = 255;
+            height[y * size + x] = relief;
+            finish[index + 2] = rough;
+            finish[index + 3] = contact;
+          }
+        }
+        for (var v = 0; v < size; v++) {
+          for (var u = 0; u < size; u++) {
+            var i = (layer * size * size + v * size + u) * 4;
+            // Wrap central differences so normals tile with the color.
+            finish[i] = 128 + (height[v * size + ((u - 1) & wrap)] - height[v * size + ((u + 1) & wrap)]) * 225;
+            finish[i + 1] = 128 + (height[((v - 1) & wrap) * size + u] - height[((v + 1) & wrap) * size + u]) * 225;
+          }
+        }
+      }
+      renderer.setSurfaceLayers(size, count, albedo, finish);
+      return { size: size, count: count, bytes: albedo.byteLength + finish.byteLength };
+    }
+
+    // The compatibility shader used by very low WebGL1 uniform budgets has no
+    // sampler uniforms, so avoid generating and uploading an unused atlas.
+    var surfaceSamplingEnabled = !renderer.profile ||
+      renderer.profile.textureSampling !== false;
+    var surfaceLayers = highVisuals ? makeSurfaceLayers() : null;
+    var surfaceAtlasCanvas = surfaceSamplingEnabled && !highVisuals
+      ? makeSurfaceDetailAtlas()
+      : null;
+    var surfaceDetailTexture = (surfaceAtlasCanvas && THREE.Texture)
+      ? new THREE.Texture(surfaceAtlasCanvas, { flipY: false })
+      : null;
+    if (surfaceDetailTexture && renderer.setDetailTexture) {
+      renderer.setDetailTexture(surfaceDetailTexture);
+    }
 
     /* ----------------------------------------------------- merged pixel batch */
 
-    var BATCH_VERT_CAP = 56000;
-    var ART_VERT_CAP = 190000;
+    var BATCH_VERT_CAP = 64000;
+    var ART_VERT_CAP = highVisuals ? 270000 : 230000;
+    var V5_DETAIL_LIMIT = QUALITY.name === 'high' ? 40000 :
+      (QUALITY.name === 'balanced' ? 30000 : 16000);
+    var v5DetailVerts = 0;
     var artVerts = 0;
     var batches = Object.create(null);
     var batchList = [];
@@ -523,6 +1061,18 @@
     var energyRings = [];
     var arenaMood = null;
 
+    // All V5 surface detail is optional, shared-resource geometry created during
+    // the single startup build.  The budget keeps the extra grooving/rust/stencil
+    // work from displacing later core zone geometry if the scene grows again.
+    function v5Box(key, x, y, z, sx, sy, sz, yaw) {
+      if (v5DetailVerts + 24 > V5_DETAIL_LIMIT) return null;
+      var b = getBatch(key);
+      if (!b) return null;
+      if (!b.box(x, y, z, sx, sy, sz, yaw)) return null;
+      v5DetailVerts += 24;
+      return b;
+    }
+
     function PixelBatch(key, material) {
       this.key = key;
       this.material = material;
@@ -531,6 +1081,7 @@
       this.idx = [];
       this.verts = 0;
       this.mesh = null;
+      this.shadowCaster = /^(container|crane|cabGlass|casting|concrete|quay|steel|black|rustLight|fenceDark)/.test(key);
     }
 
     PixelBatch.prototype.reserve = function (n) {
@@ -544,7 +1095,7 @@
     // Six flat-shaded faces per box.  yaw is enough for panels, crates,
     // floor plates and warning chevrons.
     PixelBatch.prototype.box = function (x, y, z, sx, sy, sz, yaw) {
-      if (!this.reserve(24)) return;
+      if (!this.reserve(24)) return false;
       var c = Math.cos(yaw || 0);
       var s = Math.sin(yaw || 0);
       var hx = Math.abs(sx) / 2, hy = Math.abs(sy) / 2, hz = Math.abs(sz) / 2;
@@ -567,6 +1118,35 @@
       face([-hx, -hy, -hz], [-hx, -hy, hz], [-hx, hy, hz], [-hx, hy, -hz], -1, 0, 0);
       face([-hx, hy, hz], [hx, hy, hz], [hx, hy, -hz], [-hx, hy, -hz], 0, 1, 0);
       face([-hx, -hy, -hz], [hx, -hy, -hz], [hx, -hy, hz], [-hx, -hy, hz], 0, -1, 0);
+      return true;
+    };
+
+    PixelBatch.prototype.quad = function (a, b, c, d) {
+      if (!this.reserve(4)) return;
+      var abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+      var acx = c[0] - a[0], acy = c[1] - a[1], acz = c[2] - a[2];
+      var nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+      var len = Math.hypot(nx, ny, nz) || 1;
+      var start = this.p.length / 3;
+      this.p.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]);
+      for (var i = 0; i < 4; i++) this.n.push(nx / len, ny / len, nz / len);
+      this.idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+    };
+
+    PixelBatch.prototype.patch = function (x, y, z, rx, rz, yaw, seed) {
+      var sides = 24;
+      if (!this.reserve(sides + 1)) return;
+      var base = this.p.length / 3;
+      this.p.push(x, y, z);
+      this.n.push(0, 1, 0);
+      for (var i = 0; i < sides; i++) {
+        var a = i / sides * Math.PI * 2;
+        var ring = 0.79 + 0.16 * Math.sin(a * 3 + seed) + hash2(i, seed) * 0.16;
+        var p = localXZ(x, z, Math.cos(a) * rx * ring, -Math.sin(a) * rz * ring, yaw);
+        this.p.push(p[0], y, p[1]);
+        this.n.push(0, 1, 0);
+        this.idx.push(base, base + 1 + i, base + 1 + (i + 1) % sides);
+      }
     };
 
     // Low-poly capped-looking pipe segment.  Flanges are separate short
@@ -610,7 +1190,7 @@
         var b = a + 1;
         var c = start + row + k;
         var d = c + 1;
-        ind.push(a, c, b, b, c, d);
+        ind.push(a, b, c, b, d, c);
       }
     };
 
@@ -622,6 +1202,8 @@
       geo.setIndex(new Uint16Array(this.idx));
       this.mesh = new THREE.Mesh(geo, this.material);
       this.mesh.name = 'pixel-batch-' + this.key;
+      this.mesh.staticShadow = true;
+      this.mesh.castShadow = highVisuals && this.shadowCaster;
       // Keep the baked contact darkening underneath the additive fake lights.
       if (this.key === 'aoSoft') this.mesh.renderOrder = -3;
       else if (this.key === 'ao') this.mesh.renderOrder = -2;
@@ -630,6 +1212,34 @@
       this.n = null;
       this.idx = null;
     };
+
+    function paintTopSurface(texture, x, y, z, w, d, cols, rows, budgeted, yaw) {
+      if (!texture) return;
+      cols = cols || 5;
+      rows = rows || 3;
+      yaw = yaw || 0;
+      var cw = w / cols, cd = d / rows;
+      for (var pz = 0; pz < rows; pz++) {
+        for (var px = 0; px < cols; px++) {
+          var texX = Math.floor(px / cols * texture.w);
+          var texY = Math.floor(pz / rows * texture.h);
+          var entry = texture.palette[texture.data[texY * texture.w + texX]];
+          if (!entry || entry.skip) continue;
+          var b = getBatch(entry.key);
+          if (!b) continue;
+          if (budgeted && v5DetailVerts + 24 > V5_DETAIL_LIMIT) return;
+          var p = localXZ(x, z,
+            -w / 2 + (px + 0.5) * cw,
+            -d / 2 + (pz + 0.5) * cd, yaw);
+          if (b.box(
+            p[0], y, p[1],
+            cw * 1.02, 0.008, cd * 1.02, yaw
+          ) && budgeted) {
+            v5DetailVerts += 24;
+          }
+        }
+      }
+    }
 
     function getBatch(key) {
       if (!IM[key]) return null;
@@ -651,6 +1261,11 @@
       var c = Math.cos(yaw || 0);
       var s = Math.sin(yaw || 0);
       return [x + lx * c + lz * s, z - lx * s + lz * c];
+    }
+
+    function panelPoint(x, z, lx, y, lz, yaw) {
+      var p = localXZ(x, z, lx, lz, yaw);
+      return [p[0], y, p[1]];
     }
 
     function beamXZ(key, x0, z0, x1, z1, y, thick, height) {
@@ -778,6 +1393,7 @@
       'C': ['011', '100', '100', '100', '011'],
       'D': ['110', '101', '101', '101', '110'],
       'E': ['111', '100', '110', '100', '111'],
+      'F': ['111', '100', '110', '100', '100'],
       'G': ['011', '100', '101', '101', '011'],
       'H': ['101', '101', '111', '101', '101'],
       'I': ['111', '010', '010', '010', '111'],
@@ -825,12 +1441,16 @@
             if (glyph[row].charAt(col) !== '1') continue;
             var lx = -total * cell / 2 + i * 4 * cell + col * cell + cell / 2;
             var ly = (2 - row) * cell;
-            b.box(
-              x + lx * c + normalOffset * s,
-              y + ly,
-              z - lx * s + normalOffset * c,
-              cell * 0.92, cell * 0.92, 0.014, yaw
-            );
+          if (highVisuals) {
+            var half = cell * 0.46;
+            b.quad(panelPoint(x, z, lx - half, y + ly - half, normalOffset, yaw),
+              panelPoint(x, z, lx + half, y + ly - half, normalOffset, yaw),
+              panelPoint(x, z, lx + half, y + ly + half, normalOffset, yaw),
+              panelPoint(x, z, lx - half, y + ly + half, normalOffset, yaw));
+          } else {
+            b.box(x + lx * c + normalOffset * s, y + ly, z - lx * s + normalOffset * c,
+              cell * 0.92, cell * 0.92, 0.014, yaw);
+          }
           }
         }
       }
@@ -873,12 +1493,15 @@
         for (var row = 0; row < 5; row++) {
           for (var col = 0; col < 3; col++) {
             if (glyph[row].charAt(col) !== '1') continue;
-            b.box(
-              x + (-total * cell / 2 + i * 4 * cell + col * cell + cell / 2),
-              0.034,
-              z + (row - 2) * cell,
-              cell * 0.88, 0.012, cell * 0.88, 0
-            );
+          var x0 = x + (-total * cell / 2 + i * 4 * cell + col * cell + cell / 2);
+          var z0 = z + (row - 2) * cell;
+          if (highVisuals) {
+            var half = cell * 0.44, y = 0.046;
+            b.quad([x0 - half, y, z0 + half], [x0 + half, y, z0 + half],
+              [x0 + half, y, z0 - half], [x0 - half, y, z0 - half]);
+          } else {
+            b.box(x0, 0.034, z0, cell * 0.88, 0.012, cell * 0.88, 0);
+          }
           }
         }
       }
@@ -886,7 +1509,7 @@
 
     /* ---------------------------------------------------------- surface paint */
 
-    function paintPixelSurface(texture, x, y, z, yaw, w, h, cols, rows, normalOffset) {
+    function paintPixelSurface(texture, x, y, z, yaw, w, h, cols, rows, normalOffset, budgeted) {
       if (!texture) return;
       cols = cols || 6;
       rows = rows || 5;
@@ -898,40 +1521,48 @@
           var texX = Math.floor(px / cols * texture.w);
           var texY = Math.floor(py / rows * texture.h);
           var entry = texture.palette[texture.data[texY * texture.w + texX]];
-          if (!entry) continue;
+          if (!entry || entry.skip) continue;
           var b = getBatch(entry.key);
           if (!b) continue;
+          if (budgeted && v5DetailVerts + 24 > V5_DETAIL_LIMIT) return;
           var lx = -w / 2 + (px + 0.5) * cw;
           var ly = h / 2 - (py + 0.5) * ch;
-          b.box(
+          if (b.box(
             x + lx * c + off * s,
             y + ly,
             z - lx * s + off * c,
             cw * 1.02, ch * 1.02, 0.01, yaw
-          );
+          ) && budgeted) {
+            v5DetailVerts += 24;
+          }
         }
       }
     }
 
-    function paintFloorSurface(texture, x, z, w, d, cols, rows) {
+    function paintFloorSurface(texture, x, z, w, d, cols, rows, budgeted, yaw) {
       if (!texture) return;
       cols = cols || 6;
       rows = rows || 6;
+      yaw = yaw || 0;
       var cw = w / cols, cd = d / rows;
       for (var pz = 0; pz < rows; pz++) {
         for (var px = 0; px < cols; px++) {
           var texX = Math.floor(px / cols * texture.w);
           var texY = Math.floor(pz / rows * texture.h);
           var entry = texture.palette[texture.data[texY * texture.w + texX]];
-          if (!entry) continue;
+          if (!entry || entry.skip) continue;
           var b = getBatch(entry.key);
           if (!b) continue;
-          b.box(
-            x - w / 2 + (px + 0.5) * cw,
-            0.033,
-            z - d / 2 + (pz + 0.5) * cd,
-            cw * 1.02, 0.008, cd * 1.02, 0
-          );
+          if (budgeted && v5DetailVerts + 24 > V5_DETAIL_LIMIT) return;
+          var p = localXZ(x, z,
+            -w / 2 + (px + 0.5) * cw,
+            -d / 2 + (pz + 0.5) * cd, yaw);
+          if (b.box(
+            p[0], 0.035, p[1],
+            cw * 1.02, 0.006, cd * 1.02, yaw
+          ) && budgeted) {
+            v5DetailVerts += 24;
+          }
         }
       }
     }
@@ -951,10 +1582,12 @@
 
     function addContactAO(x, z, sx, sz, yaw, softOnly) {
       var outer = getBatch('aoSoft');
-      if (outer) outer.box(x, 0.058, z, sx, 0.006, sz, yaw || 0);
+      if (outer && highVisuals) outer.patch(x, 0.049, z, sx * 0.58, sz * 0.57, yaw, 3);
+      else if (outer) outer.box(x, 0.058, z, sx, 0.006, sz, yaw || 0);
       if (softOnly) return;
       var core = getBatch('ao');
-      if (core) core.box(x, 0.06, z, sx * 0.68, 0.006, sz * 0.68, yaw || 0);
+      if (core && highVisuals) core.patch(x, 0.052, z, sx * 0.42, sz * 0.42, yaw, 3);
+      else if (core) core.box(x, 0.06, z, sx * 0.68, 0.006, sz * 0.68, yaw || 0);
     }
 
     function addWallAO(x, y, z, sx, sy, sz, yaw, softOnly) {
@@ -965,9 +1598,38 @@
       if (core) core.box(x, y, z, sx * 0.62, sy * 0.82, sz * 1.4, yaw || 0);
     }
 
+    // V5 sunset cast-shadow approximation.  These are long, soft dark quads
+    // baked into the shared AO batches, aligned with the low directional light.
+    // They are not a shadow map and do not occlude per-pixel; they restore the
+    // long directional read that flat ambient occlusion alone cannot provide.
+    function addSunShadow(x, z, width, height, groundY, yaw) {
+      if (highVisuals) return;
+      if (!isFinite(SHADOW_DIR_X) || !isFinite(SHADOW_DIR_Z)) return;
+      var h = height === undefined ? 2.4 : height;
+      if (h < 0.2) return;
+      var len = Math.min(h * 2.35, 7.2);
+      var cx = x + SHADOW_DIR_X * len * 0.5;
+      var cz = z + SHADOW_DIR_Z * len * 0.5;
+      if (cx > 22.2 || cx < -22.2 || cz < -43.2 || cz > 19.2) return;
+      var gy = (groundY === undefined ? 0 : groundY) + 0.043;
+      var yawS = Math.atan2(SHADOW_DIR_X, SHADOW_DIR_Z);
+      var outer = getBatch('aoSoft');
+      var core = getBatch('ao');
+      if (outer) {
+        outer.box(cx - SHADOW_DIR_X * 0.12, gy, cz - SHADOW_DIR_Z * 0.12,
+          width * 1.12, 0.006, len, yawS);
+      }
+      if (core) {
+        core.box(cx + SHADOW_DIR_X * 0.1, gy + 0.002, cz + SHADOW_DIR_Z * 0.1,
+          width * 0.58, 0.006, len * 0.9, yawS);
+      }
+      void yaw;
+    }
+
     // Two low-opacity additive slabs per region.  They are merged into the
     // static art batches, so region colour is almost free at runtime.
     function addZoneLightPool(x, z, radius, key) {
+      if (highVisuals) return;
       var outer = getBatch('glow' + key);
       var core = getBatch('glow' + key + 'Core');
       if (outer) outer.box(x, 0.062, z, radius * 2, 0.005, radius * 2, 0);
@@ -1001,6 +1663,7 @@
     // cheap "ray-traced" read: a source colour dragged across the floor toward
     // the viewer instead of a flat circle around the emitter.
     function addReflectionFloor(key, x, z, yaw, length, width) {
+      if (highVisuals) return;
       var b = getBatch(key);
       if (b) b.box(x, 0.072, z, width, 0.006, length, yaw || 0);
     }
@@ -1052,19 +1715,136 @@
       return CONTAINER_KEYS[Math.abs(i) % CONTAINER_KEYS.length];
     }
 
+    function addCorrugatedContainer(x, z, w, h, d, yaw, key, baseY, opts) {
+      // Lay the ribs along the longest dimension, including the short cover units.
+      if (d > w) {
+        var depth = d;
+        d = w;
+        w = depth;
+        yaw += Math.PI / 2;
+      }
+      var paint = getBatch(key);
+      var frame = getBatch('steelDark');
+      var wear = getBatch('casting');
+      var recess = getBatch('steelDeep');
+      var oxide = getBatch('rustDark');
+      var stencil = getBatch('stencil');
+      var amber = getBatch('railPaint');
+      var code = opts.code || ('DKY-' + (Math.abs(Math.floor(x * 3 + z * 7)) % 89 + 10));
+      var halfW = w * 0.5, halfD = d * 0.5;
+      var rail = Math.min(0.14, h * 0.17);
+      var yLo = baseY + rail, yHi = baseY + h - rail;
+      var middle = baseY + h * 0.5;
+
+      function part(batch, lx, y, lz, sx, sy, sz, faceYaw) {
+        var p = localXZ(x, z, lx, lz, faceYaw);
+        batch.box(p[0], y, p[1], sx, sy, sz, faceYaw);
+      }
+
+      if (baseY < 0.05) addContactAO(x, z, w * 1.08, d * 1.12, yaw);
+      paint.box(x, middle, z, w - 0.24, h - 0.06, d - 0.24, yaw);
+      for (var edge = -1; edge <= 1; edge += 2) {
+        var faceYaw = edge > 0 ? yaw : yaw + Math.PI;
+        for (var r = -1; r <= 1; r += 2) {
+          part(frame, 0, middle + r * (h - rail) * 0.5, halfD - 0.06, w - 0.18, rail, 0.12, faceYaw);
+          part(wear, 0, middle + r * (h - rail) * 0.5 + rail * 0.28, halfD + 0.005,
+            w - 0.37, 0.021, 0.024, faceYaw);
+        }
+        part(frame, halfW - 0.10, middle, halfD - 0.078, 0.20, h - 0.05, 0.156, faceYaw);
+        part(frame, halfW - 0.10, middle, -halfD + 0.078, 0.20, h - 0.05, 0.156, faceYaw);
+        for (var end = -1; end <= 1; end += 2) {
+          for (var level = -1; level <= 1; level += 2) {
+            var y = middle + level * (h * 0.5 - rail * 0.71);
+            part(wear, end * (halfW - 0.12), y, halfD - 0.068, 0.25, rail * 1.40, 0.16, faceYaw);
+            part(recess, end * (halfW - 0.12), y, halfD + 0.019, 0.095, rail * 0.51, 0.018, faceYaw);
+          }
+        }
+
+        var panels = Math.max(6, Math.round(w / 0.31));
+        var step = (w - 0.39) / panels;
+        var foot = halfD - 0.096, peak = halfD - 0.009;
+        for (var k = 0; k < panels; k++) {
+          var a = -halfW + 0.195 + k * step;
+          var stations = [a, a + step * 0.15, a + step * 0.33, a + step * 0.69,
+            a + step * 0.87, a + step];
+          var profile = [foot, foot, peak, peak, foot, foot];
+          for (var f = 0; f < profile.length - 1; f++) {
+            paint.quad(
+              panelPoint(x, z, stations[f], yLo, profile[f], faceYaw),
+              panelPoint(x, z, stations[f + 1], yLo, profile[f + 1], faceYaw),
+              panelPoint(x, z, stations[f + 1], yHi, profile[f + 1], faceYaw),
+              panelPoint(x, z, stations[f], yHi, profile[f], faceYaw));
+          }
+          if (hash2(k + edge, w + x) > 0.83) {
+            part(oxide, a + step * 0.48, yLo + h * 0.09, peak + 0.004, step * 0.29, h * 0.19, 0.009, faceYaw);
+          }
+        }
+        var idP = localXZ(x, z, -w * 0.21, halfD + 0.005, faceYaw);
+        var cell = Math.min(h * 0.065, w / (code.length * 10));
+        part(recess, -w * 0.21, baseY + h * 0.65, halfD + 0.005, code.length * cell * 4.2, cell * 6.2, 0.017, faceYaw);
+        drawPixelText('stencil', idP[0], baseY + h * 0.65, idP[1], faceYaw, code, cell, 0.015);
+        if (opts.topTrim !== false) {
+          part(amber, w * 0.29, baseY + h * 0.26, halfD + 0.004, w * 0.15, h * 0.06, 0.016, faceYaw);
+          part(stencil, w * 0.29, baseY + h * 0.35, halfD + 0.004, w * 0.09, 0.028, 0.016, faceYaw);
+        }
+      }
+
+      // Recessed double doors, gasket, hinges and four continuous locking rods.
+      for (var e = -1; e <= 1; e += 2) {
+        var doorYaw = yaw + e * Math.PI / 2;
+        part(recess, 0, middle, halfW - 0.036, d - 0.13, h - 0.15, 0.07, doorYaw);
+        for (var leaf = -1; leaf <= 1; leaf += 2) {
+          var hinge = leaf * (halfD - 0.18);
+          part(paint, leaf * (d * 0.25 - 0.023), middle, halfW - 0.012, halfD - 0.11, h - rail * 2.10, 0.043, doorYaw);
+          for (var seam = 1; seam < 4; seam++) {
+            part(frame, leaf * (d * 0.25 - 0.023), yLo + (yHi - yLo) * seam * 0.25,
+              halfW + 0.008, halfD - 0.17, 0.031, 0.027, doorYaw);
+          }
+          for (var rod = 1; rod <= 2; rod++) {
+            var rx = leaf * (halfD * (0.19 + 0.26 * rod));
+            var rp = localXZ(x, z, rx, halfW + 0.030, doorYaw);
+            wear.pipe(rp[0], yLo + 0.008, rp[1], rp[0], yHi - 0.008, rp[1], 0.024, 7);
+            for (var bolt = -1; bolt <= 1; bolt += 2) {
+              part(frame, rx, middle + bolt * (h - rail * 2) * 0.4, halfW + 0.027, 0.107, 0.060, 0.064, doorYaw);
+            }
+            part(wear, rx - leaf * 0.067, baseY + h * 0.39, halfW + 0.047, 0.15, 0.024, 0.04, doorYaw);
+          }
+          for (var joint = 1; joint < 4; joint++) {
+            part(wear, hinge, yLo + (yHi - yLo) * joint * 0.25, halfW + 0.022, 0.14, 0.081, 0.078, doorYaw);
+          }
+        }
+      }
+      for (var roof = -halfD + 0.22; roof < halfD - 0.12; roof += 0.27) {
+        part(paint, 0, baseY + h - 0.027, roof, w - 0.36, 0.048, 0.09, yaw);
+      }
+    }
+
     // One container body, readable corner castings and corrugation.  Only the
     // low props passed with standable:true enter the traversal whitelist.
     function addContainer(x, z, w, h, d, yaw, key, baseY, opts) {
       opts = opts || {};
       baseY = baseY || 0;
-      var body = getBatch(key || containerKeyFor(Math.floor(x + z)));
+      var c = Math.cos(yaw || 0), s = Math.sin(yaw || 0);
+      addCollider(x, z,
+        Math.abs(w * c) + Math.abs(d * s),
+        Math.abs(w * s) + Math.abs(d * c), baseY, baseY + h, 'steel');
+      if (opts.standable) {
+        addStandable(x, z,
+          Math.abs(w * c) + Math.abs(d * s),
+          Math.abs(w * s) + Math.abs(d * c), baseY + h, opts.code || 'CONTAINER');
+      }
+      key = key || containerKeyFor(Math.floor(x + z));
+      if (highVisuals) {
+        addCorrugatedContainer(x, z, w, h, d, yaw || 0, key, baseY, opts);
+        return;
+      }
+      var body = getBatch(key);
       var edge = getBatch('steelDark');
       var trim = getBatch('steel2');
       var rust = getBatch('rust');
       if (!body) return;
       if (baseY < 0.05) addContactAO(x, z, w * 1.22, d * 1.22, yaw);
       body.box(x, baseY + h / 2, z, w, h, d, yaw);
-      var c = Math.cos(yaw || 0), s = Math.sin(yaw || 0);
       var lx, lz, p;
       if (edge) {
         edge.box(x, baseY + h * 0.5, z, w + 0.055, 0.12, d + 0.055, yaw);
@@ -1105,13 +1885,59 @@
         p = localXZ(x, z, w * 0.31, -d / 2 - 0.04, yaw);
         rust.box(p[0], baseY + h * 0.45, p[1], w * 0.12, h * 0.3, 0.03, yaw);
       }
-      addCollider(x, z,
-        Math.abs(w * c) + Math.abs(d * s),
-        Math.abs(w * s) + Math.abs(d * c), baseY, baseY + h);
-      if (opts.standable) {
-        addStandable(x, z,
-          Math.abs(w * c) + Math.abs(d * s),
-          Math.abs(w * s) + Math.abs(d * c), baseY + h, opts.code || 'CONTAINER');
+      // V5 surface pass: real panel grooves, door hardware, warning decals and
+      // sparse atlas grime sit on top of the V4 corrugation.  All boxes share the
+      // existing material batches and the fixed startup detail budget.
+      if (QUALITY.extraDetail) {
+        var sideZ, g, hb, rr, hg, tc;
+        for (sideZ = -1; sideZ <= 1; sideZ += 2) {
+          for (g = -1; g <= 1; g++) {
+            p = localXZ(x, z, g * w * 0.27, sideZ * (d / 2 + 0.035), yaw);
+            v5Box('steelDeep', p[0], baseY + h * 0.52, p[1],
+              0.03, h * 0.78, 0.014, yaw);
+          }
+          for (hb = -1; hb <= 1; hb += 2) {
+            p = localXZ(x, z, 0, sideZ * (d / 2 + 0.034), yaw);
+            v5Box('steelDark', p[0], baseY + h * (hb > 0 ? 0.79 : 0.23), p[1],
+              w * 0.88, 0.025, 0.014, yaw);
+          }
+          for (rr = 0; rr < 2; rr++) {
+            p = localXZ(x, z, (hash2(x + rr, z + sideZ) - 0.5) * w * 0.72,
+              sideZ * (d / 2 + 0.05), yaw);
+            v5Box(rr ? 'rustDark' : 'rust',
+              p[0], baseY + h * (0.38 + hash2(sideZ, rr) * 0.34), p[1],
+              0.05 + hash2(rr, x) * 0.08, h * (0.12 + hash2(z, rr) * 0.16),
+              0.012, yaw);
+          }
+        }
+        for (g = -1; g <= 1; g += 2) {
+          p = localXZ(x, z, g * w * 0.38, d / 2 + 0.045, yaw);
+          v5Box('steel2', p[0], baseY + h * 0.5, p[1], 0.045, h * 0.72, 0.02, yaw);
+        }
+        for (hg = 0; hg < 4; hg++) {
+          p = localXZ(x, z, (hg < 2 ? -1 : 1) * (w / 2 - 0.13), d / 2 + 0.05, yaw);
+          v5Box('steel2', p[0], baseY + h * (0.18 + hg * 0.2), p[1],
+            0.11, 0.07, 0.03, yaw);
+        }
+        p = localXZ(x, z, 0, d / 2 + 0.055, yaw);
+        v5Box('hazard', p[0], baseY + h * 0.18, p[1], w * 0.26, 0.16, 0.016, yaw);
+        p = localXZ(x, z, 0, d / 2 + 0.052, yaw);
+        v5Box('white', p[0], baseY + h * 0.1, p[1], w * 0.18, 0.05, 0.014, yaw);
+        for (tc = -1; tc <= 1; tc++) {
+          p = localXZ(x, z, 0, tc * d * 0.25, yaw);
+          v5Box('steelDark', p[0], baseY + h + 0.015, p[1],
+            w * 0.88, 0.025, 0.05, yaw);
+        }
+        if (QUALITY.name === 'high' || Math.abs(Math.floor(x + z)) % 2 === 0) {
+          var atlasCols = QUALITY.name === 'high' ? 6 : 4;
+          var atlasRows = QUALITY.name === 'high' ? 3 : 2;
+          for (sideZ = -1; sideZ <= 1; sideZ += 2) {
+            p = localXZ(x, z, 0, sideZ * (d / 2 + 0.032), yaw);
+            paintPixelSurface(TEX.containerDetail, p[0], baseY + h * 0.32, p[1],
+              yaw, w * 0.9, h * 0.5, atlasCols, atlasRows, 0.002, true);
+          }
+        }
+        addSunShadow(x, z, Math.min(w, d) * 1.25, h, 0, yaw);
       }
       if (opts.topTrim !== false) {
         var rail = getBatch('hazard');
@@ -1137,8 +1963,24 @@
       if (band) {
         band.box(x, baseY + 0.2, z, 0.09, 0.05, 0.92, yaw);
       }
+      if (QUALITY.extraDetail) {
+        for (var pl = -1; pl <= 1; pl++) {
+          var px = x + pl * 0.32 * s;
+          var pz = z + pl * 0.32 * c;
+          v5Box('rustDark', px, baseY + 0.190, pz, 1.02, 0.008, 0.028, yaw);
+          v5Box('rustDark', px, baseY + 0.192, pz, 0.96, 0.006, 0.022, yaw);
+          for (var nl = -1; nl <= 1; nl += 2) {
+            var np = localXZ(px, pz, nl * 0.42, 0.01, yaw);
+            v5Box('steel2', np[0], baseY + 0.232, np[1], 0.026, 0.012, 0.026, yaw);
+            v5Box('rust', np[0], baseY + 0.194, np[1],
+              0.05 + hash2(pl, nl) * 0.06, 0.008, 0.04, yaw);
+          }
+        }
+        paintTopSurface(TEX.woodDetail, x, baseY + 0.183, z, 1.0, 0.86, 6, 2, true, yaw);
+        addSunShadow(x, z, 0.9, 0.3, 0, yaw);
+      }
       addContactAO(x, z, 1.55, 1.4, yaw);
-      addCollider(x, z, 1.2, 1.05, baseY, baseY + 0.2);
+      addCollider(x, z, 1.2, 1.05, baseY, baseY + 0.2, 'wood');
       addStandable(x, z, 1.2, 1.05, baseY + 0.2, 'PALLET');
     }
 
@@ -1192,7 +2034,260 @@
       }
     }
 
+    function addPortalCrane(x, z) {
+      var paint = getBatch('cranePaint');
+      var steel = getBatch('steelDark');
+      var frame = getBatch('steel2');
+      var cast = getBatch('casting');
+      var glass = getBatch('cabGlass');
+      var light = getBatch('lampWarm');
+      var red = getBatch('lampRed');
+      var lx = 18.6, lz = 4.6;
+      var lower = 8.65, upper = 10.52;
+
+      for (var side = -1; side <= 1; side += 2) {
+        var xLeg = x + side * lx;
+        var zEnd = z + side * lz;
+        for (var end = -1; end <= 1; end += 2) {
+          var zLeg = z + end * lz;
+          addCollider(xLeg, zLeg, 0.76, 0.76, 0, 9.4);
+          addContactAO(xLeg, zLeg, 1.7, 1.7, 0);
+          paint.box(xLeg, lower / 2, zLeg, 0.59, lower, 0.61, 0);
+          steel.box(xLeg, 0.27, zLeg, 1.24, 0.54, 1.09, 0);
+          cast.box(xLeg, 0.56, zLeg, 0.78, 0.11, 0.78, 0);
+          for (var band = 0; band < 3; band++) {
+            steel.box(xLeg, 0.97 + band * 0.37, zLeg, 0.61, 0.12, 0.63, 0);
+          }
+          for (var gusset = -1; gusset <= 1; gusset += 2) {
+            paint.pipe(xLeg, 6.38, zLeg, xLeg + gusset * 2.32, lower, zLeg, 0.17, 6);
+          }
+          red.box(xLeg, upper + 0.15, zLeg, 0.12, 0.16, 0.12, 0);
+        }
+        paint.pipe(xLeg, 3.4, z - lz, xLeg, lower, z + lz, 0.15, 6);
+        paint.pipe(xLeg, lower, z - lz, xLeg, 3.4, z + lz, 0.15, 6);
+        beamXZ('steelDark', xLeg, z - lz, xLeg, z + lz, lower, 0.39, 0.24);
+        beamXZ('cranePaint', x - lx - 0.35, zEnd, x + lx + 0.35, zEnd, lower, 0.52, 0.34);
+        beamXZ('cranePaint', x - lx - 0.35, zEnd, x + lx + 0.35, zEnd, upper, 0.37, 0.29);
+        beamXZ('casting', x - lx, zEnd, x + lx, zEnd, lower - 0.225, 0.29, 0.10);
+
+        for (var cell = 0; cell < 12; cell++) {
+          var a = x - lx + cell * lx / 6;
+          var b = x - lx + (cell + 1) * lx / 6;
+          paint.pipe(a, cell % 2 ? upper : lower, zEnd,
+            b, cell % 2 ? lower : upper, zEnd, 0.137, 6);
+          if (cell % 2 === 0) {
+            paint.box(a, (lower + upper) * 0.5, zEnd, 0.15, upper - lower, 0.18, 0);
+            steel.box(a, lower + 0.13, zEnd, 0.43, 0.20, 0.40, 0);
+            beamXZ('steelDark', a, z - lz, a, z + lz, lower, 0.23, 0.23);
+          }
+        }
+      }
+
+      // The enclosed cab hangs clear of the lanes. The hoist runs on the
+      // lower rail, with double sheaves and a spreader over the stack.
+      var cabX = x - 10.1;
+      var cabZ = z - lz - 0.15;
+      steel.box(cabX, 7.46, cabZ, 2.48, 1.68, 1.61, 0);
+      paint.box(cabX, 6.63, cabZ, 2.74, 0.28, 1.94, 0);
+      paint.box(cabX, 8.38, cabZ, 2.78, 0.18, 1.93, 0);
+      for (var win = -1; win <= 1; win++) {
+        glass.box(cabX + win * 0.78, 7.63, cabZ + 0.825, 0.67, 0.82, 0.065, 0);
+      }
+      glass.box(cabX + 1.245, 7.54, cabZ, 0.062, 0.80, 1.37, 0);
+      light.box(cabX + 0.94, 6.72, cabZ + 1.01, 0.30, 0.11, 0.11, 0);
+      var trolleyX = x + 5.4;
+      paint.box(trolleyX, 8.63, z, 2.6, 0.52, 9.7, 0);
+      steel.box(trolleyX, 8.04, z, 2.28, 0.72, 2.65, 0);
+      for (var cord = -1; cord <= 1; cord += 2) {
+        var cx = trolleyX + cord * 1.20;
+        frame.pipe(cx, 8.03, z - 0.82, cx, 4.25, z - 1.0, 0.027, 5);
+        frame.pipe(cx, 8.03, z + 0.82, cx, 4.25, z + 1.0, 0.027, 5);
+        paint.box(cx, 4.13, z, 0.30, 0.27, 2.57, 0);
+        light.box(cx, 4.00, z + 0.88, 0.16, 0.08, 0.37, 0);
+      }
+      paint.box(trolleyX, 4.10, z, 3.25, 0.26, 0.66, 0);
+      for (var latch = -1; latch <= 1; latch += 2) {
+        steel.box(trolleyX + latch * 1.52, 3.93, z + 1.12, 0.21, 0.28, 0.36, 0);
+        steel.box(trolleyX + latch * 1.52, 3.93, z - 1.12, 0.21, 0.28, 0.36, 0);
+      }
+      addSignPanel(x - 2.4, 9.41, z - lz + 0.29, 0, 6.0, 0.94, 'DOCK CRANE 04', 'hazard');
+    }
+
+    function buildEntryCanopy() {
+      var paint = getBatch('cranePaint');
+      var frame = getBatch('steelDark');
+      var lights = getBatch('lampWarm');
+      var frontZ = 9.7, rearZ = 7.1;
+      beamXZ('steelDark', -9.4, rearZ, 9.4, rearZ, 4.36, 0.28, 0.39);
+      beamXZ('cranePaint', -9.4, rearZ, 9.4, rearZ, 5.35, 0.31, 0.28);
+      beamXZ('cranePaint', -9.4, frontZ, 9.4, frontZ, 5.35, 0.31, 0.28);
+      for (var i = 0; i < 8; i++) {
+        var x = -9.4 + i * 2.35;
+        var next = x + 2.35;
+        paint.pipe(x, i % 2 ? 4.37 : 5.35, rearZ, next, i % 2 ? 5.35 : 4.37, rearZ, 0.095, 6);
+        frame.pipe(x, 4.48, frontZ, x, 4.37, rearZ, 0.085, 6);
+        if (i % 2 === 0) {
+          frame.box(x + 1.15, 4.29, rearZ, 0.89, 0.16, 0.27, 0);
+          lights.box(x + 1.15, 4.194, rearZ + 0.055, 0.76, 0.064, 0.19, 0);
+        }
+      }
+      addSignPanel(0, 3.88, rearZ + 0.25, 0, 5.5, 0.82, 'ENTRY 07', 'white');
+      addSignPanel(0, 3.14, rearZ + 0.25, 0, 5.6, 0.47, 'SUNSET SHIFT // 18:40', 'hazard');
+    }
+
+    function buildRepairGantry(x, z) {
+      var ivory = getBatch('craneIvory');
+      var steel = getBatch('steelDark');
+      var blue = getBatch('containerTeal');
+      var hazard = getBatch('railPaint');
+      var light = getBatch('lampCool');
+      var lampZ = z - 0.47;
+      for (var s = -1; s <= 1; s += 2) {
+        var leg = x + s * 3.2;
+        ivory.box(leg, 3.2, z, 0.42, 4.98, 0.42, 0);
+        blue.box(leg, 1.60, z, 0.52, 1.7, 0.53, 0);
+        steel.box(leg, 0.85, z, 0.73, 0.32, 0.68, 0);
+        ivory.pipe(leg, 4.06, z, leg - s * 1.6, 5.30, z, 0.16, 6);
+        hazard.box(leg, 2.5, z, 0.53, 0.11, 0.53, 0);
+        hazard.box(leg, 2.24, z, 0.53, 0.11, 0.53, 0);
+        for (var fastener = 0; fastener < 3; fastener++) {
+          steel.box(leg, 3.5 + 0.30 * fastener, z + 0.219, 0.123, 0.083, 0.025, 0);
+        }
+        steel.box(x + s * 1.68, 5.27, lampZ, 1.05, 0.37, 0.76, 0);
+        light.box(x + s * 1.68, 5.20, lampZ + 0.39, 0.87, 0.16, 0.055, 0);
+      }
+      ivory.box(x, 5.60, z, 7.30, 0.53, 0.71, 0);
+      blue.box(x, 5.58, z + 0.364, 6.94, 0.28, 0.045, 0);
+      steel.box(x, 5.045, z, 0.92, 0.72, 0.65, 0);
+      steel.pipe(x, 5.0, z, x, 3.57, z, 0.036, 6);
+      hazard.box(x, 3.66, z, 0.32, 0.25, 0.28, 0);
+      addSignPanel(x, 5.91, z + 0.45, 0, 4.52, 0.69, 'REPAIR 04', 'white');
+
+      // Layered concrete and steel deck edge, grated toe strip and work bays.
+      var deck = getBatch('quay');
+      var track = getBatch('track');
+      for (var t = 0; t < 12; t++) {
+        var deckZ = z + 8.4 - t * 0.82;
+        deck.box(x - 6.55, 0.32, deckZ, 0.16, 0.54, 0.71, 0);
+        steel.box(x - 6.65, 0.32, deckZ, 0.09, 0.25, 0.55, 0);
+        var px = x - 5.97 + Math.floor(t / 6) * 11.94;
+        track.box(px, 0.718, z + 6.76 - (t % 6) * 1.41, 0.45, 0.012, 1.38, 0);
+        for (var slot = 0; slot < 6; slot++) {
+          steel.box(px, 0.726, z + 7.34 - (t % 6) * 1.41 - slot * 0.235, 0.39, 0.013, 0.040, 0);
+        }
+      }
+      for (var mark = -1; mark <= 1; mark += 2) {
+        hazard.box(x + mark * 2.02, 0.721, z + 4.17, 0.11, 0.013, 3.64, 0);
+      }
+      hazard.box(x, 0.721, z + 5.99, 4.13, 0.013, 0.11, 0);
+    }
+
+    function addWetDeckDetails() {
+      var track = getBatch('track');
+      var wet = getBatch('wet');
+      var dark = getBatch('steelDeep');
+      var strip = getBatch('casting');
+      var paint = getBatch('railPaint');
+      var stencil = getBatch('stencil');
+      dark.box(0, -0.21, -13.1, 46, 0.39, 66.8, 0);
+
+      for (var side = -1; side <= 1; side += 2) {
+        var laneX = side * 4.62;
+        dark.box(laneX, 0.027, -10.7, 0.25, 0.017, 57.5, 0);
+        strip.box(laneX + side * 0.034, 0.039, -10.7, 0.052, 0.018, 57.5, 0);
+        for (var tie = 0; tie < 35; tie++) {
+          var tieZ = 17.1 - tie * 1.63;
+          dark.box(laneX, 0.037, tieZ, 0.55, 0.019, 0.24, 0);
+          strip.box(laneX - side * 0.137, 0.053, tieZ, 0.055, 0.016, 0.058, 0);
+          if (tie % 3 === 1) {
+            paint.box(side * 3.9, 0.041, tieZ, 0.090, 0.012, 1.25, 0);
+          }
+        }
+      }
+
+      var puddles = [
+        [-2.85, 10.7, 1.29, 1.37, 0.25], [1.45, 8.3, 1.61, 1.19, -0.20],
+        [0.5, 2.2, 2.35, 1.50, 0.30], [-7.5, 4.6, 1.72, 0.96, -0.31],
+        [-2.5, -6.1, 1.4, 1.75, 0.43], [2.6, -10.8, 1.05, 2.7, 0.19],
+        [8.6, -12.4, 2.3, 1.7, -0.16], [14.4, -14.3, 2.1, 1.39, 0.17],
+        [-3.9, -21.2, 2.5, 1.7, 0.18], [8.4, -26.5, 2.8, 1.13, 0.30],
+        [-5.8, -38.7, 2.4, 1.51, 0.50], [5.0, -41.6, 1.2, 0.9, 0.16]
+      ];
+      for (var p = 0; p < puddles.length; p++) {
+        var v = puddles[p];
+        var y = p === 7 ? 0.719 : 0.032;
+        track.patch(v[0], y - 0.003, v[1], v[2] * 1.24, v[3] * 1.23, v[4], p + 2);
+        wet.patch(v[0], y, v[1], v[2], v[3], v[4], p + 2);
+        wet.patch(v[0] - v[2] * 0.83, y + 0.001, v[1] + v[3] * 0.63,
+          v[2] * 0.28, v[3] * 0.34, v[4], p + 19);
+      }
+
+      for (var j = 0; j < 18; j++) {
+        var x = Math.sin(j * 0.49) * 1.16;
+        var z = 11.7 - j * 0.99;
+        var a = -Math.cos(j * 0.49) * 0.42;
+        track.box(x - 1.05, 0.039, z, 0.17, 0.009, 0.92, a);
+        track.box(x + 1.05, 0.039, z, 0.17, 0.009, 0.92, a);
+        if (j % 3 === 0) {
+          stencil.box(-2.4, 0.043, z, 0.073, 0.010, 0.36, 0);
+          stencil.box(2.4, 0.043, z, 0.073, 0.010, 0.36, 0);
+        }
+      }
+      drawFloorText('stencil', -3.0, 8.33, '07', 0.25);
+      drawFloorText('stencil', 2.36, -9.25, 'LOAD 04', 0.18);
+    }
+
+    function buildHighHarbor() {
+      IM.harborNear = matBasic(0x4c4451, { fog: false });
+      IM.harborFar = matBasic(0x6f5967, { fog: false });
+      IM.harborBlack = matBasic(0x342839, { fog: false });
+      var middle = getBatch('harborNear');
+      var distant = getBatch('harborFar');
+      var silhouette = getBatch('harborBlack');
+      for (var i = 0; i < 22; i++) {
+        var x = -112 + i * 10.6;
+        var z = -83 - hash2(i, 43) * 25;
+        var h = 1.7 + hash2(i, 66) * 5.8;
+        var bw = 4.8 + hash2(i, 81) * 10;
+        distant.box(x, h / 2 - 0.35, z, bw, h, 4.8, 0);
+        if (i % 4 === 0) {
+          middle.box(x, h + 1.5, z, 1.9, 3.2, 1.8, 0);
+          middle.box(x, h + 3.16, z, 2.2, 0.26, 2.1, 0);
+        }
+      }
+      for (var j = 0; j < 4; j++) {
+        var cx = [-67, -29, 19, 56][j];
+        var cz = [-73, -84, -65, -81][j];
+        var top = [18, 11, 15, 20][j];
+        var extent = [16, 20, 18, 21][j];
+        middle.box(cx + extent * 0.13, -0.25, cz, extent * 1.47, 1.6, 4.9, 0);
+        silhouette.box(cx, top * 0.5, cz, 0.87, top, 1.3, 0);
+        silhouette.box(cx + 1.8, top * 0.56, cz + 1.6, 0.70, top * 1.10, 0.67, 0);
+        silhouette.pipe(cx - 5.5, top - 1.5, cz, cx + extent, top + 2.8, cz, 0.25, 6);
+        silhouette.pipe(cx - 5.5, top - 1.19, cz, cx + extent, top + 3.55, cz, 0.16, 6);
+        silhouette.pipe(cx, top + 4.9, cz, cx + extent, top + 3.3, cz, 0.063, 5);
+        silhouette.pipe(cx, top + 4.9, cz, cx - 5.5, top - 1.19, cz, 0.065, 5);
+        silhouette.pipe(cx + extent - 3.5, top + 2.4, cz, cx + extent - 3.5, top * 0.49, cz, 0.037, 4);
+        silhouette.box(cx + extent - 3.5, top * 0.48, cz, 0.95, 0.26, 0.36, 0);
+        for (var brace = 0; brace < 5; brace++) {
+          var x0 = cx + brace * 0.345;
+          var y = 1.6 + brace * (top - 2.3) / 5;
+          silhouette.pipe(x0, y, cz, x0 + 1.48, y + 2.5, cz + 1.6, 0.092, 5);
+        }
+      }
+
+      var water = new THREE.Mesh(G.plane, IM.water);
+      water.position.set(0, -0.63, -46);
+      water.rotation.x = -Math.PI / 2;
+      water.scale.set(286, 220, 1);
+      scene.add(water);
+    }
+
     function addDockCrane(x, z) {
+      if (highVisuals) {
+        addPortalCrane(x, z);
+        return;
+      }
       var steelDark = getBatch('steelDark');
       var steel2 = getBatch('steel2');
       var hazard = getBatch('hazard');
@@ -1238,6 +2333,32 @@
         rust.box(x - legX + 0.34, 3.2, z - legZ + 0.34, 0.3, 1.4, 0.02, 0);
         rust.box(x + legX - 0.34, 4.3, z + legZ - 0.34, 0.24, 1.1, 0.02, 0);
       }
+      if (QUALITY.extraDetail) {
+        for (var cs = -1; cs <= 1; cs += 2) {
+          for (var cl = -1; cl <= 1; cl += 2) {
+            var cxp = x + cs * legX;
+            var czp = z + cl * legZ;
+            for (var cb = 0; cb < 3; cb++) {
+              v5Box('hazard', cxp, 1.3 + cb * 0.5, czp,
+                0.7, 0.11, 0.7, 0);
+            }
+            for (var cr = 0; cr < 5; cr++) {
+              v5Box('steel2', cxp - 0.34, 0.9 + cr * 0.72, czp,
+                0.1, 0.03, 0.34, 0);
+            }
+            addSunShadow(cxp, czp, 0.9, top, 0, 0);
+          }
+        }
+        for (var tr = -1; tr <= 1; tr++) {
+          var trp = x + 5.4 + tr * 0.72;
+          for (var sh = 0; sh < 4; sh++) {
+            v5Box('steel2', trp, top - 0.2 - sh * 0.28, z + 1.08,
+              0.16, 0.08, 0.06, 0);
+          }
+        }
+        v5Box('rust', x - legX + 0.33, 2.2, z - legZ + 0.33,
+          0.24, 1.1, 0.018, 0);
+      }
       // Overhead sign reads from the entrance approach.
       addSignPanel(x, top + 1.15, z + legZ + 0.1, 0, 5.4, 1.05, 'DOCK CRANE 04', 'hazard');
       addSignPanel(x, top + 2.15, z + legZ + 0.1, 0, 3.6, 0.62, 'CAP 32T', 'white');
@@ -1264,6 +2385,21 @@
         }
       }
       if (hazard) hazard.box(x, 0.48, z - 0.54, 1.2, 0.14, 0.03, yaw);
+      if (QUALITY.extraDetail) {
+        var fp = localXZ(x, z, 0, 0.56, yaw);
+        for (var fg = 0; fg < 4; fg++) {
+          v5Box('steelDeep', fp[0], 0.82 + fg * 0.11, fp[1], 0.72, 0.035, 0.02, yaw);
+        }
+        v5Box('lampWarm', fp[0], 1.02, fp[1], 0.12, 0.08, 0.02, yaw);
+        var mp = localXZ(x, z, -0.35, 0.05, yaw);
+        v5Box('steel2', mp[0], 1.35, mp[1], 0.035, 1.1, 0.035, yaw);
+        v5Box('steel2', mp[0], 2.06, mp[1], 0.08, 0.05, 0.68, yaw);
+        v5Box('hazard', mp[0], 0.52, mp[1], 0.04, 0.24, 0.04, yaw);
+        v5Box('steelDeep', x, 1.42, z, 0.46, 0.08, 0.44, yaw);
+        var rp = localXZ(x, z, 0, 0.58, yaw);
+        v5Box('rust', rp[0], 0.55, rp[1], 0.22, 0.3, 0.014, yaw);
+        addSunShadow(x, z, 1.4, 1.7, 0, yaw);
+      }
       addCollider(x, z, 1.9, 1.2, 0, 1.65);
     }
 
@@ -1276,6 +2412,12 @@
       b.pipe(x, 0, z, x, h, z, r, 6);
       b.box(x, 0.08, z, r * 3.2, 0.16, r * 3.2, 0);
       if (cap) cap.box(x, h, z, r * 2.5, 0.1, r * 2.5, 0);
+      if (QUALITY.extraDetail) {
+        v5Box('steel2', x, h * 0.56, z, r * 2.08, 0.035, r * 2.08, 0);
+        var rp = localXZ(x, z, 0, r * 1.01, 0);
+        v5Box('rust', rp[0], h * 0.32, rp[1], r * 0.35, h * 0.34, 0.012, 0);
+        addSunShadow(x, z, r * 2.0, h, 0, 0);
+      }
       addCollider(x, z, r * 2.2, r * 2.2, 0, h);
     }
 
@@ -1288,7 +2430,8 @@
       addCollider(x, z, 0.46, 0.46, 0, 0.88);
     }
 
-    function addIBeam(x, z, h, width, yaw) {      var b = getBatch('steelDark');
+    function addIBeam(x, z, h, width, yaw) {
+      var b = getBatch('steelDark');
       var accent = getBatch('steel2');
       var rust = getBatch('rust');
       if (!b) return;
@@ -1302,13 +2445,26 @@
       b.box(x, 0.09, z, width * 1.75, 0.18, width * 1.75, yaw);
       if (accent) {
         for (var i = -1; i <= 1; i += 2) {
-          var p = localXZ(x, z, i * width * 0.48, 0, yaw);
+          var p = localXZ(x, z, i * width * 0.32, width * 0.44, yaw);
           accent.box(p[0], 0.2, p[1], 0.06, 0.06, 0.06, yaw);
         }
       }
       if (rust) {
-        var rp = localXZ(x, z, width * 0.4, 0, yaw);
-        rust.box(rp[0], 0.75, rp[1], 0.12, 0.55, 0.025, yaw);
+        var rp = localXZ(x, z, 0, width * 0.44, yaw);
+        rust.box(rp[0], 0.75, rp[1], width * 0.25, 0.55, 0.025, yaw);
+      }
+      if (QUALITY.extraDetail) {
+        var lp = localXZ(x, z, 0, -width * 0.58, yaw);
+        for (var rung = 0; rung < 6; rung++) {
+          v5Box('steel2', lp[0], 0.55 + rung * (h - 0.9) / 5, lp[1],
+            width * 0.52, 0.035, 0.035, yaw);
+        }
+        var seam = localXZ(x, z, 0, width * 0.44, yaw);
+        for (var sb = 0; sb < 3; sb++) {
+          v5Box('steel2', seam[0], h * (0.2 + sb * 0.28), seam[1],
+            width * 0.62, 0.05, 0.045, yaw);
+        }
+        addSunShadow(x, z, width * 1.5, h, 0, yaw);
       }
     }
 
@@ -1335,6 +2491,18 @@
         rust.box(x - s * (sz / 2 + 0.014), y + sy * 0.72, z - c * (sz / 2 + 0.014),
           sx * 0.3, sy * 0.22, 0.018, yaw);
       }
+      if (QUALITY.extraDetail) {
+        for (var cg = -1; cg <= 1; cg += 2) {
+          var cp = localXZ(x, z, cg * sx * 0.44, sz / 2 + 0.012, yaw);
+          v5Box('steelDark', cp[0], y + sy * 0.5, cp[1], 0.07, sy * 0.78, 0.02, yaw);
+          v5Box('steelDark', cp[0], y + sy * 0.86, cp[1], sx * 0.2, 0.05, 0.018, yaw);
+        }
+        var sp = localXZ(x, z, 0, sz / 2 + 0.026, yaw);
+        v5Box('white', sp[0], y + sy * 0.38, sp[1], sx * 0.3, 0.06, 0.012, yaw);
+        v5Box(tag === 'danger' ? 'redPaint' : 'hazard',
+          sp[0], y + sy * 0.28, sp[1], sx * 0.22, 0.07, 0.012, yaw);
+        addSunShadow(x, z, Math.min(sx, sz) * 1.1, sy + y, 0, yaw);
+      }
     }
 
     function addBarrel(x, z, scale, key) {
@@ -1350,6 +2518,20 @@
       if (top) {
         top.box(x, h + 0.012, z, r * 1.78, 0.035, r * 1.78, 0);
         top.box(x + r * 0.42, h + 0.038, z, 0.09, 0.035, 0.09, 0);
+      }
+      if (QUALITY.extraDetail) {
+        for (var br = 0; br < 2; br++) {
+          var a = hash2(br, x) * Math.PI * 2;
+          var bx = x + Math.cos(a) * r * 0.98;
+          var bz = z + Math.sin(a) * r * 0.98;
+          v5Box(br ? 'rustDark' : 'rust', bx, h * (0.38 + br * 0.16), bz,
+            0.04 + hash2(x, br) * 0.05, h * 0.34, 0.012, -a);
+        }
+        var lp = localXZ(x, z, 0, r * 1.01, 0);
+        v5Box(key === 'greenPaint' ? 'white' : 'hazard',
+          lp[0], h * 0.58, lp[1], r * 0.9, h * 0.2, 0.014, 0);
+        v5Box('steel2', lp[0], h * 0.42, lp[1], r * 0.68, 0.025, 0.012, 0);
+        addSunShadow(x, z, r * 2.1, h, 0, 0);
       }
     }
 
@@ -1737,14 +2919,15 @@
       });
     }
 
-    function addCollider(cx, cz, sx, sz, y0, y1) {
+    function addCollider(cx, cz, sx, sz, y0, y1, surface) {
       colliders.push({
         minX: cx - sx / 2,
         maxX: cx + sx / 2,
         minZ: cz - sz / 2,
         maxZ: cz + sz / 2,
         y0: y0 === undefined ? 0 : y0,
-        y1: y1 === undefined ? 4 : y1
+        y1: y1 === undefined ? 4 : y1,
+        surface: surface || 'steel'
       });
     }
 
@@ -2468,6 +3651,10 @@
     }
 
     function buildSkyBackdrop() {
+      if (highVisuals) {
+        buildHighHarbor();
+        return;
+      }
       // Bands are stacked to fake an orange-to-indigo sunset gradient.  They
       // are ordinary unlit geometry, not a shader or an imported skybox.
       addSkyBand(2.5, 13, 0xd9694a);
@@ -2494,6 +3681,27 @@
       sunHalo.rotation.x = Math.PI / 2;
       sunHalo.scale.set(19, 19, 19);
       scene.add(sunHalo);
+
+      // Baked anamorphic flare streaks around the sun.  This is layered additive
+      // geometry, not a post-process bloom buffer; it keeps the pixel language
+      // and costs no extra pass.
+      var flareMat = matBasic(0xffb066, {
+        transparent: true, opacity: 0.13, blending: 'additive',
+        depthWrite: false, fog: false
+      });
+      var flareH = new THREE.Mesh(G.box, flareMat);
+      flareH.position.set(-44, 15.5, -111.8);
+      flareH.scale.set(44, 0.22, 0.01);
+      scene.add(flareH);
+      var flareV = new THREE.Mesh(G.box, flareMat);
+      flareV.position.set(-44, 15.5, -111.8);
+      flareV.scale.set(0.22, 7.2, 0.01);
+      scene.add(flareV);
+      var flareD = new THREE.Mesh(G.box, flareMat);
+      flareD.position.set(-44, 15.5, -111.8);
+      flareD.rotation.z = Math.PI / 4;
+      flareD.scale.set(18, 0.12, 0.01);
+      scene.add(flareD);
 
       var cloudMat = matBasic(0x6d3c57, {
         transparent: true, opacity: 0.42, depthWrite: false, fog: false
@@ -2548,6 +3756,19 @@
         var glint = getBatch('waterGlint');
         if (glint) {
           glint.box(gx, -0.53, gz, gw, 0.012, 0.06 + hash2(g, 17) * 0.12, 0);
+        }
+      }
+      // A coherent glitter path under the sun reads as a real reflection lane
+      // instead of isolated random sparkles.  Still a procedural additive fake.
+      for (var sg = 0; sg < 22; sg++) {
+        var st = sg / 21;
+        var sx = -44 + (hash2(sg, 23) - 0.5) * (2.2 + st * 22);
+        var sz = -47.5 - st * 58;
+        var sw = 0.35 + st * 2.4 + hash2(sg, 29) * 1.1;
+        var sp = getBatch('waterGlint');
+        if (sp) sp.box(sx, -0.525, sz, sw, 0.012, 0.035 + st * 0.09, 0);
+        if (sp && sg % 4 === 0) {
+          sp.box(sx + 1.2, -0.524, sz + 0.6, sw * 0.55, 0.012, 0.03, 0);
         }
       }
       skyBackdrop = { sunDisc: sunDisc, sunHalo: sunHalo };
@@ -2613,11 +3834,13 @@
       hazardBandX(-8.5, -22.2, 22.2, 0.42);
       hazardBandX(-22.45, -22.2, 22.2, 0.44);
       hazardBandX(-43.55, -22.2, 22.2, 0.3);
-      for (i = -2; i <= 2; i++) {
-        var lane = getBatch(i % 2 ? 'hazard' : 'hazardDark');
-        if (lane) {
-          lane.box(0, 0.038, 5.5, 0.16, 0.01, 35.0, 0);
-          lane.box(0, 0.038, -31.5, 0.16, 0.01, 22.0, 0);
+      if (!highVisuals) {
+        for (i = -2; i <= 2; i++) {
+          var lane = getBatch(i % 2 ? 'hazard' : 'hazardDark');
+          if (lane) {
+            lane.box(0, 0.038, 5.5, 0.16, 0.01, 35.0, 0);
+            lane.box(0, 0.038, -31.5, 0.16, 0.01, 22.0, 0);
+          }
         }
       }
       var glowLine = getBatch('screen');
@@ -2632,6 +3855,50 @@
       drawFloorText('hazard', 0, -6.0, 'BAY A', 0.3);
       drawFloorText('white', 14.0, -12.0, 'LOAD 04', 0.24);
       drawFloorText('hazard', 0, -31.0, 'DOCK 4', 0.4);
+
+      // V5 deck pass: expansion joints, wet/oil patches with a sparse shared
+      // atlas, tyre scuffs and readable lane chevrons.  These are all merged
+      // startup geometry; the atlas contributes wear, not a new texture unit.
+      if (QUALITY.extraDetail && !highVisuals) {
+        var jointZ = [12.6, 0.6, -11.8, -24.2, -39.6];
+        for (i = 0; i < jointZ.length; i++) {
+          v5Box('steelDeep', 0, 0.031, jointZ[i], 43.4, 0.012, 0.055, 0);
+          v5Box('steel2', 8.5, 0.032, jointZ[i], 0.08, 0.012, 0.12, 0);
+        }
+        for (i = 0; i < 12; i++) {
+          x = -18.5 + (i * 7.3 + hash2(i, 4) * 5.1) % 37;
+          z = 15.2 - i * 4.7 - hash2(i, 9) * 2.2;
+          var pw = 0.9 + hash2(i, 2) * 1.8;
+          var pd = 0.55 + hash2(i, 7) * 1.0;
+          v5Box('oil', x, 0.030, z, pw, 0.008, pd, hash2(i, 3) * 1.5);
+          paintFloorSurface(TEX.dockDetail, x, z, pw * 1.12, pd * 1.12, 5, 3, true, hash2(i, 3) * 1.5);
+          if (i % 3 === 0) {
+            v5Box('waterGlint', x, 0.041, z, pw * 0.46, 0.006, 0.035,
+              hash2(i, 6) * 1.5);
+          }
+        }
+        for (i = 0; i < 18; i++) {
+          x = arand(-19, 19);
+          z = arand(-41, 17);
+          var ty = hash2(i, x) * 0.8 - 0.4;
+          v5Box('oil', x, 0.036, z, 0.9 + hash2(i, z) * 1.3, 0.006, 0.07, ty);
+          v5Box('oil', x + 0.7, 0.036, z + 0.24, 0.7 + hash2(z, i) * 1.1, 0.006, 0.06, ty);
+        }
+        var arrowZ = [12.0, 3.6, -4.8, -28.0, -40.5];
+        for (i = 0; i < arrowZ.length; i++) {
+          var ax = i % 2 ? 2.6 : -2.6;
+          v5Box('hazard', ax, 0.042, arrowZ[i], 0.14, 0.01, 1.15, 0);
+          v5Box('hazard', ax - 0.3, 0.042, arrowZ[i] - 0.48, 0.14, 0.01, 0.52, 0.72);
+          v5Box('hazard', ax + 0.3, 0.042, arrowZ[i] - 0.48, 0.14, 0.01, 0.52, -0.72);
+        }
+        for (i = 0; i < 9; i++) {
+          var rz = 14 - i * 6.2;
+          v5Box(i % 2 ? 'reflectWarm' : 'reflectCool', i % 2 ? -16.2 : 16.2,
+            0.053, rz, 0.9, 0.006, 2.8, 0);
+        }
+      }
+
+      if (highVisuals) addWetDeckDetails();
 
       // The boss deck keeps a wide hazard ring and a clear central lane.
       for (i = 0; i < 40; i++) {
@@ -2731,8 +3998,12 @@
       }
       beamXZ('steelDark', -9.4, 9.7, 9.4, 9.7, 4.55, 0.34, 0.48);
       beamXZ('steel2', -9.4, 9.7, 9.4, 9.7, 4.9, 0.1, 0.12);
-      addSignPanel(0, 4.1, 9.78, 0, 6.6, 0.9, 'ENTRY 07', 'hazard');
-      addSignPanel(0, 3.35, 9.78, 0, 5.2, 0.45, 'SUNSET SHIFT // 18:40', 'white');
+      if (highVisuals) {
+        buildEntryCanopy();
+      } else {
+        addSignPanel(0, 4.1, 9.78, 0, 6.6, 0.9, 'ENTRY 07', 'hazard');
+        addSignPanel(0, 3.35, 9.78, 0, 5.2, 0.45, 'SUNSET SHIFT // 18:40', 'white');
+      }
 
       // Spawn-side props.  The low crates are explicit jump/step surfaces.
       var c1 = getBatch('containerTeal');
@@ -2843,10 +4114,16 @@
 
       addSignPanel(-11.85, 2.4, 7.0, Math.PI / 2, 3.4, 0.75, 'BAY A', 'hazard');
       addSignPanel(11.85, 2.2, 4.8, -Math.PI / 2, 3.4, 0.75, 'BAY B', 'hazard');
-      addSignPanel(-11.9, 4.55, -7.4, Math.PI / 2, 2.8, 0.6, 'DKY 441', 'white');
-      addSignPanel(11.9, 3.4, -6.6, -Math.PI / 2, 2.8, 0.6, 'DKY 208', 'white');
+      if (highVisuals) {
+        addSignPanel(-12.62, 4.11, -4.0, Math.PI / 2, 2.06, 0.52, 'DKY 441', 'white');
+        addSignPanel(12.50, 3.88, -6.6, -Math.PI / 2, 2.06, 0.52, 'DKY 208', 'white');
+      } else {
+        addSignPanel(-11.9, 4.55, -7.4, Math.PI / 2, 2.8, 0.6, 'DKY 441', 'white');
+        addSignPanel(11.9, 3.4, -6.6, -Math.PI / 2, 2.8, 0.6, 'DKY 208', 'white');
+      }
 
-      addDockCrane(0, 1.4);      addZoneLightPool(0, 1.4, 5.2, 'Warm');
+      addDockCrane(0, 1.4);
+      addZoneLightPool(0, 1.4, 5.2, 'Warm');
       addReflectionFloor('reflectWarm', 0, 4.0, 0, 7.0, 0.42);
       addReflectionFloor('reflectWarm', -7.4, 3.4, Math.PI / 2, 4.0, 0.2);
       addReflectionFloor('reflectWarm', 7.3, -3.9, Math.PI / 2, 4.0, 0.2);
@@ -2871,14 +4148,14 @@
         hazard.box(px, ph + 0.1, pz + pd / 2 - 0.35, pw - 0.4, 0.05, 0.18, 0);
         hazard.box(px, ph + 0.1, pz - pd / 2 + 0.35, pw - 0.4, 0.05, 0.18, 0);
       }
-      addCollider(px, pz, pw, pd, 0, ph);
+      addCollider(px, pz, pw, pd, 0, ph, 'concrete');
       addStandable(px, pz, pw, pd, ph, 'LOADING PLATFORM');
       addContactAO(px, pz, pw * 1.12, pd * 1.12, 0);
       // Step pallet so the platform can be entered without a huge jump.
       addPallet(px, pz + pd / 2 + 0.75, 0, 0.0);
       var step = getBatch('quay');
       if (step) step.box(px, 0.17, pz + pd / 2 + 0.72, 2.2, 0.34, 1.3, 0);
-      addCollider(px, pz + pd / 2 + 0.72, 2.2, 1.3, 0, 0.34);
+      addCollider(px, pz + pd / 2 + 0.72, 2.2, 1.3, 0, 0.34, 'concrete');
       addStandable(px, pz + pd / 2 + 0.72, 2.2, 1.3, 0.34, 'LOADING STEP');
 
       // Repair gantry / welding frame on the platform.
@@ -2887,7 +4164,8 @@
         addCollider(px + side * 3.2, pz - 3.4, 0.6, 0.6, 0, 3.4);
       }
       beamXZ('steelDark', px - 3.2, pz - 3.4, px + 3.2, pz - 3.4, 3.3, 0.24, 0.3);
-      addSignPanel(px, 2.75, pz - 3.32, 0, 3.6, 0.62, 'REPAIR 04', 'hazard');
+      if (highVisuals) buildRepairGantry(px, pz - 3.4);
+      else addSignPanel(px, 2.75, pz - 3.32, 0, 3.6, 0.62, 'REPAIR 04', 'hazard');
       addControlCabinet(5.6, -16.8, Math.PI, 1.15, 1.55);
       addCollider(5.6, -16.8, 1.2, 0.6, 0, 1.55);
       addCrate(px - 3.8, ph, pz + 1.0, 1.2, 0.8, 0.9, 0.04, 'danger');
@@ -2906,7 +4184,7 @@
         var tpz = tp < 0 ? -18.5 : -8.5;
         var ped = getBatch('concreteDark');
         if (ped) ped.box(tpx, 0.8, tpz, 2.3, 1.6, 2.3, 0);
-        addCollider(tpx, tpz, 2.3, 2.3, 0, 1.6);
+        addCollider(tpx, tpz, 2.3, 2.3, 0, 1.6, 'concrete');
         var pedGlow = getBatch('hazard');
         if (pedGlow) pedGlow.box(tpx, 1.5, tpz + 1.17, 1.6, 0.16, 0.03, 0);
       }
@@ -3102,7 +4380,11 @@
         scene.add(group);
 
         var bodyMat = matLambert(0x3a3f46, { specular: 0.38, roughness: 0.42 });
+        tuneSurface(bodyMat, 0.9, 0.52, 0.38);
+        tuneTexture(bodyMat, DETAIL_TILE.metal, 0.62, 0.7);
         var trimMat = matLambert(0x8a6a3a, { specular: 0.5, roughness: 0.3 });
+        tuneSurface(trimMat, 0.9, 0.68, 0.26);
+        tuneTexture(trimMat, DETAIL_TILE.metal, 0.72, 0.6);
         var panelMat = matBasic(0x281a0e);
         var base = new THREE.Mesh(G.box, bodyMat);
         base.position.set(0, 0.22, 0);
@@ -3150,6 +4432,8 @@
 
         // Two canisters make the station read as a resupply cache from afar.
         var canMat = matLambert(0x6b4a2a, { specular: 0.42, roughness: 0.4 });
+        tuneSurface(canMat, 0.86, 0.4, 0.34);
+        tuneTexture(canMat, DETAIL_TILE.metal, 0.68, 0.62);
         for (var c = -1; c <= 1; c += 2) {
           var can = new THREE.Mesh(G.cylinder, canMat);
           can.position.set(c * 0.46, 0.32, 0.34);
@@ -3399,6 +4683,8 @@
       group.add(exitShadow);
 
       var frameMat = matLambert(0x1d2b42, { specular: 0.38, roughness: 0.36 });
+      tuneSurface(frameMat, 0.9, 0.6, 0.32);
+      tuneTexture(frameMat, DETAIL_TILE.metal, 0.7, 0.65);
       var top = new THREE.Mesh(G.box, frameMat);
       top.position.set(0, 2.05, 0);
       top.scale.set(4.6, 0.4, 0.7);
@@ -3483,14 +4769,14 @@
     }
 
     /* ------------------------------------------------------- local light rig */
-    // Six fixed candidate emitters.  The renderer exposes five local-light
-    // slots, so the manager enables only the highest scoring five each frame.
-    // Every PointLight is built once here; the frame path only moves/retunes
-    // the existing objects and never allocates.
-    var LOCAL_LIGHT_CANDIDATES = 6;
+    // Eight fixed candidate emitters.  Quality decides how many are enabled:
+    // High may use all eight, Balanced five, Fallback four.  Every PointLight is
+    // built once here; the frame path only moves/retunes existing objects.
+    var LOCAL_LIGHT_CANDIDATES = 8;
     var localLights = [];
     var localRig = {
-      entry: null, lamp: null, pipe: null, core: null, boss: null, exit: null
+      entry: null, lamp: null, pipe: null, core: null,
+      boss: null, exit: null, supplyEntry: null, supplyRepair: null
     };
 
     function localLightScore(a, b) { return b.score - a.score; }
@@ -3518,7 +4804,8 @@
 
     function buildLocalLightRig() {
       // Warm gate light, cool container spill, amber loading lamp, boss
-      // approach fill, boss core and exit.  Only five are active at once.
+      // approach fill, boss core, exit, and two supply-cache fills.  Quality
+      // decides how many of the eight candidates may be active.
       registerLocalLight('entry', {
         x: 0, y: 3.7, z: 10.4, hex: 0xff9a4a,
         intensity: 1.05, range: 10.2, priority: 1.7
@@ -3545,11 +4832,21 @@
         x: 0, y: 2.35, z: -45.15, hex: 0xff4d6d,
         intensity: 0.85, range: 7.2, priority: 2.0
       });
+      // Supply caches get low-priority local fills so their state colour reads
+      // on nearby crates and deck plates, not just on the emissive station mesh.
+      registerLocalLight('supplyEntry', {
+        x: -9.2, y: 1.0, z: 16.3, hex: 0xffa94d,
+        intensity: 0.55, range: 5.2, priority: 0.95
+      });
+      registerLocalLight('supplyRepair', {
+        x: 14.0, y: 1.6, z: -16.0, hex: 0xffa94d,
+        intensity: 0.6, range: 5.6, priority: 1.0
+      });
     }
 
     function updateLocalLightRig() {
       var i, entry;
-      var max = Math.min(THREE.MAX_LOCAL_LIGHTS || 5, localLights.length);
+      var max = Math.min(QUALITY.maxLocalLights, localLights.length);
       var px = camera.position.x;
       var py = camera.position.y;
       var pz = camera.position.z;
@@ -3580,8 +4877,8 @@
       var bossEntry = localRig.boss;
       // While a boss laser is charging/firing, its own light is borrowed as a
       // travelling bounce on the nearest point of the beam.  This produces
-      // strong source-to-surface colour pollution without adding a seventh
-      // candidate light or exceeding the five active local-light slots.
+      // strong source-to-surface colour pollution without adding a ninth
+      // candidate light or exceeding the active local-light slots.
       var beamHex = 0;
       var beamX = 0;
       var beamY = 1.45;
@@ -3637,7 +4934,20 @@
           Math.sin(worldClock * 2.3) * 0.08;
       }
 
-      // Score = priority falloff by distance.  Sorting this six-element array
+      for (i = 0; i < 2; i++) {
+        entry = i === 0 ? localRig.supplyEntry : localRig.supplyRepair;
+        if (!entry) continue;
+        var station = supplyStations[i];
+        var ready = station.cooldown <= 0 && supplyNeeded();
+        var active = supply.active && supply.station === station;
+        entry.light.color.setHex(active ? 0x6dffb0 :
+          (station.cooldown > 0 ? 0xff6f7d : (ready ? 0xffb153 : 0x7f9bb8)));
+        entry.enabled = true;
+        entry.light.intensity = (active ? 1.0 : (ready ? 0.7 : 0.35)) +
+          Math.sin(worldClock * 1.6 + entry.phase) * 0.05;
+      }
+
+      // Score = priority falloff by distance.  Sorting this eight-element array
       // in place keeps the pool bounded and allocation-free.
       for (i = 0; i < localLights.length; i++) {
         entry = localLights[i];
@@ -3987,7 +5297,7 @@
     // released on kill/reset; nothing is constructed in the frame loop.
     var CONTACT_SHADOW_LIMIT = 12;
     var contactShadows = [];
-    // The low sun sits at (-0.66, 0.4, 0.55), so ground shadows stretch
+    // The low sun sits at (-0.72, 0.38, 0.52), so ground shadows stretch
     // toward +x/-z and read much longer than the old indoor rig.
     var shadowFlat = Math.sqrt(sun.position.x * sun.position.x + sun.position.z * sun.position.z) || 1;
     var SHADOW_DIR_X = -sun.position.x / shadowFlat;
@@ -4064,8 +5374,14 @@
     }
 
     function updateContactShadows() {
+      var limit = Math.min(QUALITY.contactShadows, contactShadows.length);
       for (var i = 0; i < contactShadows.length; i++) {
         var s = contactShadows[i];
+        if (i >= limit) {
+          if (s.soft.visible) s.soft.visible = false;
+          if (s.core.visible) s.core.visible = false;
+          continue;
+        }
         var o = s.owner;
         if (!o || o.dead || !o.pos) {
           if (s.soft.visible) s.soft.visible = false;
@@ -4114,19 +5430,19 @@
     viewRoot.add(muzzleFlash);
 
     var muzzleCoreMat = matBasic(0xffffff, {
-      transparent: true, opacity: 0.98, blending: 'additive',
+      transparent: true, opacity: 0.98, blending: 'additive', viewModel: true, radiance: 4.6,
       depthTest: false, depthWrite: false
     });
     var muzzleHaloMat = matBasic(0xffc46a, {
-      transparent: true, opacity: 0.22, blending: 'additive',
+      transparent: true, opacity: 0.22, blending: 'additive', viewModel: true, radiance: 1.8,
       depthTest: false, depthWrite: false
     });
     var muzzleStarMat = matBasic(0xfff0c0, {
-      transparent: true, opacity: 0.85, blending: 'additive',
+      transparent: true, opacity: 0.85, blending: 'additive', viewModel: true, radiance: 2.7,
       depthTest: false, depthWrite: false
     });
     var muzzleRingMat = matBasic(0xffd27a, {
-      transparent: true, opacity: 0.38, blending: 'additive',
+      transparent: true, opacity: 0.38, blending: 'additive', viewModel: true, radiance: 2.1,
       depthTest: false, depthWrite: false
     });
     var muzzleCore = new THREE.Mesh(G.lowSphere, muzzleCoreMat);
@@ -4154,7 +5470,7 @@
     muzzleFlash.add(muzzleRing);
 
     function vmMat(hex) {
-      return matBasic(hex, { depthTest: false, depthWrite: false });
+      return matBasic(hex, { depthTest: false, depthWrite: false, viewModel: true });
     }
 
     var gunBody = vmMat(0x9db4ca);
@@ -4178,9 +5494,125 @@
       transparent: true,
       opacity: 0.22,
       blending: 'additive',
+      viewModel: true,
       depthTest: false,
       depthWrite: false
     });
+
+    // Viewmodels are intentionally unlit for painter-order readability; the
+    // renderer's unlit branch turns `detail` into a sub-pixel wear grain, so the
+    // rifle, scattergun and blade stop reading as flat colour at 960/1280 px.
+    tuneSurface(gunBody, 1.0, 0.45, 0.72);
+    tuneSurface(gunLight, 1.0, 0.5, 0.78);
+    tuneSurface(gunMid, 1.0, 0.4, 0.7);
+    tuneSurface(gunDark, 1.0, 0.35, 0.62);
+    tuneSurface(gunDeep, 1.0, 0.3, 0.52);
+    tuneSurface(gunWhite, 1.0, 0.5, 0.8);
+    tuneSurface(gunVioletDeep, 1.0, 0.35, 0.5);
+    tuneSurface(gloveMat, 1.0, 0.2, 0.58);
+    tuneSurface(gloveLight, 1.0, 0.25, 0.64);
+    tuneSurface(gloveDark, 1.0, 0.2, 0.52);
+    // Unlit viewmodel surfaces sample the same shared atlas in object space, so
+    // chipped paint and brushed metal read at 960/1280 px without scene lighting.
+    tuneTexture(gunBody, DETAIL_TILE.metal, 1.0, 0.46);
+    tuneTexture(gunLight, DETAIL_TILE.metal, 1.0, 0.4);
+    tuneTexture(gunMid, DETAIL_TILE.chips, 1.0, 0.44);
+    tuneTexture(gunDark, DETAIL_TILE.chips, 1.0, 0.42);
+    tuneTexture(gunDeep, DETAIL_TILE.chips, 1.0, 0.34);
+    tuneTexture(gunWhite, DETAIL_TILE.paint, 1.0, 0.3);
+    tuneTexture(gunVioletDeep, DETAIL_TILE.paint, 1.0, 0.32);
+    tuneTexture(gloveMat, DETAIL_TILE.grime, 1.0, 0.28);
+    tuneTexture(gloveLight, DETAIL_TILE.grime, 1.0, 0.24);
+    tuneTexture(gloveDark, DETAIL_TILE.grime, 1.0, 0.26);
+
+    if (highVisuals) {
+      var metalParts = [gunBody, gunLight, gunMid, gunDark, gunDeep, gunVioletDeep];
+      for (var mp = 0; mp < metalParts.length; mp++) {
+        var metalMat = metalParts[mp];
+        metalMat.unlit = false;
+        metalMat.specular = mp < 3 ? 0.59 : 0.36;
+        metalMat.roughness = mp < 3 ? 0.28 : 0.46;
+        metalMat.textureScale = 2.4;
+        metalMat.textureMix = 0.73;
+      }
+      var gloves = [gloveMat, gloveLight, gloveDark];
+      for (var glv = 0; glv < gloves.length; glv++) {
+        gloves[glv].unlit = false;
+        gloves[glv].specular = 0.09;
+        gloves[glv].roughness = 0.87;
+        gloves[glv].textureScale = 2.3;
+        gloves[glv].textureMix = 0.70;
+      }
+      gunBody.color.setHex(0xc4b9a2);
+      gunMid.color.setHex(0x617886);
+      gunDark.color.setHex(0x374b57);
+      gunDeep.color.setHex(0x242832);
+      gunGlow.radiance = 2.9;
+      gunGlowSoft.radiance = 3.8;
+      gunPink.radiance = 2.35;
+      gunPinkSoft.radiance = 3.7;
+      gunViolet.radiance = 1.45;
+      gunVioletSoft.radiance = 2.2;
+      gunWhite.radiance = 2.85;
+    }
+
+    // Flat-faced octagonal sections create shared cast housings and blades.
+    // Sections run from the muzzle/tip toward the rear along local Z.
+    function sculptHull(sections, bevel) {
+      var pos = [], normals = [], indices = [];
+      var rings = sections.map(function (section) {
+        var z = section[0], w = section[1] * 0.5, h = section[2] * 0.5, y = section[3] || 0;
+        var a = w * (1 - bevel), b = h * (1 - bevel);
+        return [[-a, y - h, z], [a, y - h, z], [w, y - b, z], [w, y + b, z],
+          [a, y + h, z], [-a, y + h, z], [-w, y + b, z], [-w, y - b, z]];
+      });
+
+      function face(vertices) {
+        var a = vertices[0], b = vertices[1], c = vertices[2];
+        var ab = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+        var ac = new THREE.Vector3(c[0] - a[0], c[1] - a[1], c[2] - a[2]);
+        var n = ab.cross(ac).normalize();
+        var start = pos.length / 3;
+        for (var i = 0; i < vertices.length; i++) {
+          pos.push(vertices[i][0], vertices[i][1], vertices[i][2]);
+          normals.push(n.x, n.y, n.z);
+        }
+        for (var t = 1; t < vertices.length - 1; t++) indices.push(start, start + t, start + t + 1);
+      }
+
+      for (var s = 0; s < rings.length - 1; s++) {
+        for (var r = 0; r < 8; r++) {
+          var next = (r + 1) % 8;
+          face([rings[s][r], rings[s][next], rings[s + 1][next], rings[s + 1][r]]);
+        }
+      }
+      face(rings[0].slice().reverse());
+      face(rings[rings.length - 1]);
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', { array: new Float32Array(pos), itemSize: 3 });
+      geo.setAttribute('normal', { array: new Float32Array(normals), itemSize: 3 });
+      geo.setIndex(new Uint16Array(indices));
+      return geo;
+    }
+
+    var HULL = highVisuals ? {
+      housing: sculptHull([[-0.5, 0.72, 0.68], [-0.34, 1, 1], [0.33, 1, 1], [0.5, 0.77, 0.70]], 0.28),
+      cowl: sculptHull([[-0.5, 0.55, 0.50, -0.09], [-0.27, 0.92, 0.92],
+        [0.24, 1, 1], [0.5, 0.68, 0.68]], 0.34),
+      shield: sculptHull([[-0.5, 0.52, 0.68], [-0.27, 0.88, 0.95],
+        [0.21, 1.0, 1.0], [0.5, 0.78, 0.72]], 0.39),
+      blade: sculptHull([[-0.5, 0.03, 0.02, 0.32], [-0.39, 0.38, 0.56, 0.13],
+        [-0.18, 0.76, 0.95, -0.06], [0.25, 1, 1], [0.5, 0.88, 0.86, 0.05]], 0.70)
+    } : null;
+
+    function modelPart(parent, geometry, material, x, y, z, sx, sy, sz, ry, rz) {
+      var part = new THREE.Mesh(geometry, material);
+      part.position.set(x, y, z);
+      part.scale.set(sx, sy, sz);
+      if (ry || rz) part.rotation.set(0, ry || 0, rz || 0);
+      parent.add(part);
+      return part;
+    }
 
     var VM_GEO = {
       ring: new THREE.TorusGeometry(1, 0.13, 5, 18),
@@ -4198,6 +5630,12 @@
       m.renderOrder = order === undefined ? 950 : order;
       parent.add(m);
       return m;
+    }
+
+    function vmHull(parent, geo, mat, x, y, z, sx, sy, sz, order, ry, rz) {
+      var part = modelPart(parent, geo, mat, x, y, z, sx, sy, sz, ry, rz);
+      part.renderOrder = order === undefined ? 950 : order;
+      return part;
     }
 
     function vmCyl(parent, mat, x, y, z, radius, length, axis, order) {
@@ -4325,8 +5763,24 @@
       vmBox(rifle, gunLight, 0, -0.02, 0.352, 0.055, 0.007, 0.004, 951);
 
       // Receiver: dark chassis, pale upper, side armour and seam bolts.
-      vmBox(rifle, gunDark, 0, -0.005, -0.03, 0.13, 0.118, 0.38);
-      vmBox(rifle, gunBody, 0, 0.065, -0.085, 0.118, 0.06, 0.31);
+      if (highVisuals) {
+        vmHull(rifle, HULL.housing, gunDark, 0, -0.008, -0.06, 0.144, 0.133, 0.43);
+        vmHull(rifle, HULL.cowl, gunBody, 0, 0.067, -0.079, 0.147, 0.083, 0.369);
+        vmHull(rifle, HULL.shield, gunMid, 0, 0.04, 0.20, 0.104, 0.108, 0.204);
+        vmBox(rifle, gunDeep, -0.074, 0.018, -0.08, 0.011, 0.052, 0.154, 951);
+        vmCyl(rifle, gunGlowSoft, -0.080, 0.018, -0.105, 0.011, 0.107, 'z', 951);
+        for (var charge = 0; charge < 4; charge++) {
+          vmRing(rifle, gunLight, -0.080, 0.018, -0.151 + charge * 0.031, 0.013, 'z', 951);
+        }
+        vmHull(rifle, HULL.cowl, gunBody, 0, 0.047, -0.423, 0.13, 0.106, 0.228);
+        for (var vent = 0; vent < 5; vent++) {
+          vmBox(rifle, gunDeep, -0.056, 0.072, -0.346 - vent * 0.035,
+            0.028, 0.018, 0.011, 951, 0, 0, 0.49);
+        }
+      } else {
+        vmBox(rifle, gunDark, 0, -0.005, -0.03, 0.13, 0.118, 0.38);
+        vmBox(rifle, gunBody, 0, 0.065, -0.085, 0.118, 0.06, 0.31);
+      }
       vmBox(rifle, gunMid, 0, 0.097, -0.10, 0.10, 0.014, 0.27);
       vmBox(rifle, gunMid, 0, 0, -0.275, 0.116, 0.11, 0.08);
       vmBox(rifle, gunDeep, 0, -0.058, -0.08, 0.122, 0.012, 0.30, 951);
@@ -4346,14 +5800,35 @@
       vmBox(rifle, gunAmber, -0.062, -0.028, -0.245, 0.005, 0.016, 0.055, 951, 0.55, 0, 0);
       vmBox(rifle, gunAmber, -0.062, -0.028, -0.295, 0.005, 0.016, 0.055, 951, -0.55, 0, 0);
 
+      // V5 receiver wear: etched unit mark, chipped paint and exposed metal.  All
+      // startup viewmodel geometry; the render order keeps it above the casing.
+      vmBox(rifle, gunLight, -0.0755, -0.012, -0.10, 0.003, 0.026, 0.058, 952);
+      vmBox(rifle, gunDeep, -0.0762, -0.012, -0.10, 0.002, 0.006, 0.046, 952);
+      vmBox(rifle, gunAmber, -0.0762, -0.048, -0.072, 0.002, 0.008, 0.018, 952);
+      for (var wc = 0; wc < 4; wc++) {
+        vmBox(rifle, wc % 2 ? gunLight : gunMid, -0.075,
+          0.026 + hash2(wc, 3) * 0.045, -0.15 + wc * 0.026,
+          0.002, 0.006 + hash2(wc, 5) * 0.012, 0.01, 952);
+      }
+      vmBox(rifle, gunLight, -0.0415, 0.038, 0.20, 0.002, 0.008, 0.03, 952);
+      vmBox(rifle, gunDeep, -0.0422, 0.036, 0.20, 0.002, 0.003, 0.025, 952);
+
       // Top rail, rear aperture and front post.
       vmBox(rifle, gunDeep, 0, 0.11, -0.12, 0.055, 0.012, 0.33);
       for (i = 0; i < 6; i++) {
         vmBox(rifle, gunMid, 0, 0.119, -0.25 + i * 0.052, 0.062, 0.012, 0.024);
       }
-      vmBox(rifle, gunDark, 0, 0.152, 0.035, 0.078, 0.052, 0.075);
-      vmBox(rifle, gunDeep, 0, 0.156, 0.068, 0.052, 0.032, 0.012, 951);
-      vmBox(rifle, gunGlow, 0, 0.157, 0.075, 0.022, 0.012, 0.006, 951);
+      if (highVisuals) {
+        vmHull(rifle, HULL.housing, gunDeep, 0, 0.161, 0.022, 0.100, 0.085, 0.127);
+        vmRing(rifle, gunMid, 0, 0.166, 0.082, 0.035, 'z');
+        vmRing(rifle, gunLight, 0, 0.166, 0.094, 0.028, 'z', 951);
+        vmCyl(rifle, gunGlow, 0, 0.166, 0.092, 0.018, 0.006, 'z', 951);
+        vmCyl(rifle, gunAmber, -0.049, 0.164, 0.038, 0.013, 0.014, 'x', 951);
+      } else {
+        vmBox(rifle, gunDark, 0, 0.152, 0.035, 0.078, 0.052, 0.075);
+        vmBox(rifle, gunDeep, 0, 0.156, 0.068, 0.052, 0.032, 0.012, 951);
+        vmBox(rifle, gunGlow, 0, 0.157, 0.075, 0.022, 0.012, 0.006, 951);
+      }
       vmBox(rifle, gunLight, -0.038, 0.17, 0.035, 0.012, 0.025, 0.05, 951);
       vmBox(rifle, gunLight, 0.038, 0.17, 0.035, 0.012, 0.025, 0.05, 951);
       vmBox(rifle, gunAmber, -0.042, 0.158, 0.05, 0.009, 0.012, 0.02, 951);
@@ -4443,8 +5918,18 @@
       var scatter = new THREE.Group();
 
       // Squat receiver with a pale upper shell and dark side armour.
-      vmBox(scatter, gunDark, 0, 0.005, -0.06, 0.21, 0.16, 0.34);
-      vmBox(scatter, gunBody, 0, 0.095, -0.09, 0.19, 0.055, 0.27);
+      if (highVisuals) {
+        vmHull(scatter, HULL.housing, gunDark, 0, 0.008, -0.065, 0.228, 0.168, 0.42);
+        vmHull(scatter, HULL.shield, gunBody, 0, 0.086, -0.061, 0.224, 0.112, 0.324);
+        vmHull(scatter, HULL.cowl, gunBody, 0, 0.017, -0.411, 0.242, 0.131, 0.28);
+        vmBox(scatter, gunDeep, -0.113, 0.024, -0.089, 0.013, 0.040, 0.177, 951);
+        for (var shellCell = 0; shellCell < 3; shellCell++) {
+          vmBox(scatter, gunPink, -0.121, 0.024, -0.147 + shellCell * 0.057, 0.006, 0.021, 0.026, 951);
+        }
+      } else {
+        vmBox(scatter, gunDark, 0, 0.005, -0.06, 0.21, 0.16, 0.34);
+        vmBox(scatter, gunBody, 0, 0.095, -0.09, 0.19, 0.055, 0.27);
+      }
       vmBox(scatter, gunMid, 0, 0.015, -0.255, 0.225, 0.14, 0.09);
       vmBox(scatter, gunDeep, 0, -0.055, -0.10, 0.20, 0.012, 0.26, 951);
       vmBox(scatter, gunMid, -0.108, 0.015, -0.09, 0.008, 0.10, 0.20, 951);
@@ -4455,6 +5940,16 @@
       }
       for (i = 0; i < 4; i++) {
         vmBox(scatter, gunLight, -0.113, 0.075, -0.22 + i * 0.06, 0.006, 0.012, 0.012, 951);
+      }
+
+      // V5 scuffed side plate and tiny ammunition stencil.
+      vmBox(scatter, gunLight, -0.1135, 0.012, 0.015, 0.003, 0.03, 0.052, 952);
+      vmBox(scatter, gunDeep, -0.1142, 0.012, 0.015, 0.002, 0.007, 0.042, 952);
+      vmBox(scatter, gunAmber, -0.1140, -0.028, 0.045, 0.002, 0.009, 0.016, 952);
+      for (i = 0; i < 4; i++) {
+        vmBox(scatter, i % 2 ? gunMid : gunLight, -0.1145,
+          -0.012 + hash2(i, 8) * 0.03, -0.02 + i * 0.026,
+          0.002, 0.005 + hash2(i, 2) * 0.008, 0.008, 952);
       }
 
       // Breech gate with five visible shell cells; it lifts during reload.
@@ -4500,6 +5995,16 @@
       vmCyl(drum, gunBody, -0.098, 0, 0, 0.072, 0.016, 'x', 951);
       vmCyl(drum, gunPink, -0.108, 0, 0, 0.046, 0.008, 'x', 951);
       vmCyl(drum, gunVioletSoft, -0.114, 0, 0, 0.016, 0.006, 'x', 951);
+      if (highVisuals) {
+        vmRing(drum, gunLight, -0.111, 0, 0, 0.076, 'x', 951);
+        for (var rotor = 0; rotor < 6; rotor++) {
+          var rotorAngle = rotor / 6 * Math.PI * 2;
+          var ry = Math.cos(rotorAngle), rz = Math.sin(rotorAngle);
+          vmBox(drum, gunMid, -0.103, ry * 0.091, rz * 0.091, 0.062, 0.033, 0.041,
+            951, rotorAngle);
+          vmCyl(drum, gunAmber, -0.130, ry * 0.084, rz * 0.084, 0.007, 0.009, 'x', 951);
+        }
+      }
       vmBox(drum, gunLight, -0.112, 0.05, 0, 0.008, 0.012, 0.012, 951);
       vmBox(drum, gunLight, -0.112, -0.04, 0.03, 0.008, 0.01, 0.01, 951);
       vmBox(scatter, gunPink, -0.075, -0.06, -0.16, 0.02, 0.12, 0.025, 951);
@@ -4563,18 +6068,36 @@
       vmBox(blade, gunVioletSoft, -0.012, -0.05, 0.02, 0.008, 0.008, 0.03, 951);
 
       // Phase aura, layered blade, dark back-spine and pale cutting edge.
-      var aura = vmBox(blade, bladeAuraMat, 0, 0.018, -0.33, 0.056, 0.13, 0.39, 949);
-      vmBox(blade, gunVioletDeep, 0, 0.02, -0.32, 0.05, 0.115, 0.39);
-      vmBox(blade, gunViolet, 0, 0.018, -0.33, 0.032, 0.088, 0.37, 951);
-      vmBox(blade, gunVioletSoft, 0, 0.015, -0.34, 0.012, 0.04, 0.31, 951);
-      vmBox(blade, gunDark, 0, 0.078, -0.31, 0.036, 0.028, 0.35, 951);
-      vmBox(blade, gunMid, 0, 0.088, -0.30, 0.02, 0.012, 0.30, 951);
-      vmBox(blade, gunVioletSoft, 0, -0.035, -0.33, 0.018, 0.012, 0.37, 951);
-      vmBox(blade, gunWhite, 0, -0.042, -0.33, 0.008, 0.006, 0.34, 951);
-      vmBox(blade, gunMid, 0, 0.02, -0.14, 0.056, 0.10, 0.06);
-      vmBox(blade, gunViolet, -0.028, 0.02, -0.16, 0.008, 0.07, 0.02, 951);
-      vmCone(blade, gunViolet, 0, 0.02, -0.545, 0.026, 0.17, 0.045, 951);
-      vmCone(blade, gunVioletSoft, 0, 0.02, -0.565, 0.013, 0.14, 0.022, 951);
+      var aura;
+      if (highVisuals) {
+        aura = vmHull(blade, HULL.blade, bladeAuraMat, 0, 0.02, -0.348, 0.069, 0.155, 0.52, 949);
+        vmHull(blade, HULL.blade, gunVioletDeep, 0, 0.023, -0.34, 0.058, 0.13, 0.49);
+        vmHull(blade, HULL.blade, gunViolet, -0.021, 0.005, -0.344, 0.035, 0.103, 0.483, 951);
+        vmHull(blade, HULL.blade, gunVioletSoft, -0.033, 0.005, -0.348, 0.010, 0.051, 0.475, 951);
+        vmHull(blade, HULL.blade, gunWhite, 0, -0.037, -0.352, 0.019, 0.019, 0.485, 951);
+        vmHull(blade, HULL.shield, gunBody, 0, 0.006, -0.076, 0.174, 0.083, 0.114);
+        vmHull(blade, HULL.cowl, gunDark, 0, 0.070, -0.299, 0.044, 0.035, 0.32);
+      } else {
+        aura = vmBox(blade, bladeAuraMat, 0, 0.018, -0.33, 0.056, 0.13, 0.39, 949);
+        vmBox(blade, gunVioletDeep, 0, 0.02, -0.32, 0.05, 0.115, 0.39);
+        vmBox(blade, gunViolet, 0, 0.018, -0.33, 0.032, 0.088, 0.37, 951);
+        vmBox(blade, gunVioletSoft, 0, 0.015, -0.34, 0.012, 0.04, 0.31, 951);
+        vmBox(blade, gunDark, 0, 0.078, -0.31, 0.036, 0.028, 0.35, 951);
+        vmBox(blade, gunMid, 0, 0.088, -0.30, 0.02, 0.012, 0.30, 951);
+        vmBox(blade, gunVioletSoft, 0, -0.035, -0.33, 0.018, 0.012, 0.37, 951);
+        vmBox(blade, gunWhite, 0, -0.042, -0.33, 0.008, 0.006, 0.34, 951);
+        // V5 field wear: three edge nicks and a grip-wrap seam.
+        for (var bn = 0; bn < 3; bn++) {
+          vmBox(blade, gunDark, 0, -0.042, -0.22 - bn * 0.074,
+            0.012 + bn * 0.002, 0.007, 0.022, 952);
+        }
+        vmBox(blade, gunLight, 0.0265, 0.018, -0.30, 0.003, 0.012, 0.20, 952);
+        vmBox(blade, gunVioletDeep, -0.0305, 0.004, 0.095, 0.003, 0.04, 0.006, 952);
+        vmBox(blade, gunMid, 0, 0.02, -0.14, 0.056, 0.10, 0.06);
+        vmBox(blade, gunViolet, -0.028, 0.02, -0.16, 0.008, 0.07, 0.02, 951);
+        vmCone(blade, gunViolet, 0, 0.02, -0.545, 0.026, 0.17, 0.045, 951);
+        vmCone(blade, gunVioletSoft, 0, 0.02, -0.565, 0.013, 0.14, 0.022, 951);
+      }
       addHiltGlove(blade, 0, -0.005, 0.055);
       // Angle the sword up so its length reads instead of foreshortening flat.
       blade.rotation.x = 0.26;
@@ -5069,15 +6592,22 @@
       return t > 0 ? t : -1;
     }
 
-    function wallHitDistance(ox, oy, oz, dx, dy, dz, maxT) {
+    function wallHitDistance(ox, oy, oz, dx, dy, dz, maxT, impact) {
       var best = maxT;
+      if (impact) impact.surface = '';
       for (var i = 0; i < colliders.length; i++) {
         var t = rayBox(ox, oy, oz, dx, dy, dz, colliders[i]);
-        if (t > 0 && t < best) best = t;
+        if (t > 0 && t < best) {
+          best = t;
+          if (impact) impact.surface = colliders[i].surface;
+        }
       }
       if (dy < -1e-6) {
         var tFloor = -oy / dy;
-        if (tFloor > 0 && tFloor < best) best = tFloor;
+        if (tFloor > 0 && tFloor < best) {
+          best = tFloor;
+          if (impact) impact.surface = 'concrete';
+        }
       }
       return best;
     }
@@ -5136,10 +6666,10 @@
     var fxTmpDir = new THREE.Vector3();
     var fxTmpVec = new THREE.Vector3();
 
-    function fxAdditive(hex, opacity) {
+    function fxAdditive(hex, opacity, radiance) {
       return matBasic(hex, {
         transparent: true, opacity: opacity, blending: 'additive',
-        depthWrite: false, fog: false
+        depthWrite: false, fog: false, radiance: radiance
       });
     }
 
@@ -5218,7 +6748,7 @@
 
     function buildSparkPool() {
       for (var i = 0; i < SPARK_LIMIT; i++) {
-        var mat = fxAdditive(0xffffff, 1);
+        var mat = fxAdditive(0xffffff, 1, 2.1);
         var mesh = new THREE.Mesh(G.box, mat);
         mesh.visible = false;
         mesh.renderOrder = 952;
@@ -5478,10 +7008,10 @@
     function buildTracerPool() {
       for (var i = 0; i < MAX.tracers; i++) {
         var group = new THREE.Group();
-        var coreMat = fxAdditive(0xffffff, 0.95);
-        var midMat = fxAdditive(0xffffff, 0.6);
+        var coreMat = fxAdditive(0xffffff, 0.95, 2.8);
+        var midMat = fxAdditive(0xffffff, 0.6, 1.4);
         var haloMat = fxAdditive(0xffffff, 0.2);
-        var tipMat = fxAdditive(0xffffff, 0.9);
+        var tipMat = fxAdditive(0xffffff, 0.9, 2.5);
         var core = new THREE.Mesh(G.box, coreMat);
         var mid = new THREE.Mesh(G.box, midMat);
         var halo = new THREE.Mesh(G.box, haloMat);
@@ -5574,7 +7104,7 @@
     function buildBulletFxPool() {
       for (var i = 0; i < MAX.bullets; i++) {
         var group = new THREE.Group();
-        var coreMat = fxAdditive(0xffffff, 0.95);
+        var coreMat = fxAdditive(0xffffff, 0.95, 2.6);
         var haloMat = fxAdditive(0xffffff, 0.28);
         var core = new THREE.Mesh(G.lowSphere, coreMat);
         var halo = new THREE.Mesh(G.lowSphere, haloMat);
@@ -5845,6 +7375,8 @@
       return new THREE.Vector3(dir.x * c + dir.z * s, dir.y, -dir.x * s + dir.z * c);
     }
 
+    var shotImpact = highVisuals ? { surface: '' } : null;
+
     function traceShot(origin, dir, range, dmg, color) {
       var best = range;
       var hitEnemy = null;
@@ -5872,7 +7404,7 @@
         }
       }
 
-      var wallT = wallHitDistance(origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, range);
+      var wallT = wallHitDistance(origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, range, shotImpact);
       if (wallT < best) {
         best = wallT;
         hitEnemy = null;
@@ -5900,6 +7432,14 @@
         spawnImpactFx(point, C.amber, 1.2);
         registerHit(false);
         hit = true;
+      } else if (shotImpact) {
+        if (shotImpact.surface === 'steel') {
+          spawnSparks(point, 0xffbd78, 5, 4.1, 1.05);
+        } else if (shotImpact.surface === 'wood') {
+          spawnParticles(point, 0xb88353, 8, 3.1, 0.32, 0.041);
+        } else if (shotImpact.surface === 'concrete') {
+          spawnParticles(point, 0x9b9ba4, 7, 1.8, 0.42, 0.058);
+        }
       } else {
         spawnParticles(point, 0xb9d4e4, 3, 2.2, 0.22, 0.035);
         spawnSparks(point, 0xc9e6f2, 4, 3.0, 0.9);
@@ -6119,7 +7659,7 @@
       muzzleT = Math.max(0, muzzleT - dt);
       muzzleFlash.visible = muzzleT > 0;
       if (muzzleT > 0) {
-        var s = 0.1 + Math.random() * 0.08;
+        var s = highVisuals ? 0.38 + Math.random() * 0.13 : 0.1 + Math.random() * 0.08;
         muzzleFlash.scale.set(s, s, s);
         muzzleFlash.rotation.z += dt * 22;
         muzzleHaloMat.opacity = 0.16 + Math.random() * 0.16;
@@ -6512,7 +8052,9 @@
     function buildSentinelMesh() {
       var group = new THREE.Group();
       var shellMat = matLambert(0x18243a, { emissive: 0x091524 });
-      var coreMat = matBasic(C.magenta);
+      tuneSurface(shellMat, 0.9, 0.72, 0.28);
+      tuneTexture(shellMat, DETAIL_TILE.metal, 0.8, 0.65);
+      var coreMat = matBasic(C.magenta, { radiance: 2.85 });
       var ringMat = matBasic(C.cyanDim, { transparent: true, opacity: 0.9 });
       var glowMat = matBasic(C.magenta, {
         transparent: true, opacity: 0.16, blending: 'additive',
@@ -6523,26 +8065,34 @@
       glow.scale.setScalar(0.62);
       group.add(glow);
 
-      var core = new THREE.Mesh(G.sphere, coreMat);
-      core.scale.setScalar(0.34);
-      group.add(core);
-
-      var eye = new THREE.Mesh(G.box, matBasic(0xffd9f2));
-      eye.position.set(0, 0, 0.34);
-      eye.scale.set(0.16, 0.06, 0.05);
-      group.add(eye);
-
-      for (var s = -1; s <= 1; s += 2) {
-        var shell = new THREE.Mesh(G.box, shellMat);
-        shell.position.set(s * 0.44, 0.02, 0);
-        shell.rotation.z = s * 0.42;
-        shell.scale.set(0.46, 0.14, 0.62);
-        group.add(shell);
-        var fin = new THREE.Mesh(G.box, shellMat);
-        fin.position.set(s * 0.58, 0.18, -0.1);
-        fin.rotation.z = s * 0.6;
-        fin.scale.set(0.2, 0.06, 0.3);
-        group.add(fin);
+      if (highVisuals) {
+        var hull = modelPart(group, HULL.shield, IM.craneIvory, 0, 0.014, 0, 0.72, 0.47, 0.94);
+        hull.castShadow = true;
+        modelPart(group, HULL.housing, shellMat, 0, -0.12, 0.056, 0.67, 0.34, 0.89);
+        modelPart(group, HULL.cowl, IM.black, 0, 0.024, 0.416, 0.51, 0.24, 0.24);
+        modelPart(group, G.box, coreMat, 0, 0.024, 0.538, 0.31, 0.063, 0.027);
+        var retina = matBasic(0xffd9f2, { radiance: 3.75 });
+        modelPart(group, G.box, retina, 0, 0.024, 0.553, 0.174, 0.027, 0.018);
+        for (var nacelle = -1; nacelle <= 1; nacelle += 2) {
+          var wing = modelPart(group, HULL.cowl, IM.steel, nacelle * 0.44, -0.085, -0.028,
+            0.33, 0.23, 0.67, nacelle * 0.17, nacelle * 0.19);
+          wing.castShadow = true;
+          modelPart(group, HULL.cowl, IM.craneIvory, nacelle * 0.54, 0.036, -0.07,
+            0.29, 0.12, 0.52, nacelle * 0.29, nacelle * 0.28);
+          modelPart(group, G.box, IM.lampRed, nacelle * 0.56, -0.035, 0.24, 0.087, 0.037, 0.035);
+          modelPart(group, HULL.housing, IM.railPaint, nacelle * 0.436, -0.18, 0.15, 0.129, 0.12, 0.28);
+          var rotor = modelPart(group, G.torus, IM.casting, nacelle * 0.40, -0.185, -0.045, 0.16, 0.16, 0.16);
+          rotor.rotation.x = Math.PI / 2;
+        }
+      } else {
+        var core = new THREE.Mesh(G.sphere, coreMat);
+        core.scale.setScalar(0.34);
+        group.add(core);
+        modelPart(group, G.box, matBasic(0xffd9f2), 0, 0, 0.34, 0.16, 0.06, 0.05);
+        for (var s = -1; s <= 1; s += 2) {
+          modelPart(group, G.box, shellMat, s * 0.44, 0.02, 0, 0.46, 0.14, 0.62, 0, s * 0.42);
+          modelPart(group, G.box, shellMat, s * 0.58, 0.18, -0.1, 0.2, 0.06, 0.3, 0, s * 0.60);
+        }
       }
 
       var ring = new THREE.Mesh(G.torus, ringMat);
@@ -6564,7 +8114,9 @@
     function buildTurretMesh() {
       var group = new THREE.Group();
       var mountMat = matLambert(0x1b2740, { emissive: 0x070d18 });
-      var glowMat = matBasic(C.amber);
+      tuneSurface(mountMat, 0.9, 0.68, 0.3);
+      tuneTexture(mountMat, DETAIL_TILE.metal, 0.75, 0.65);
+      var glowMat = matBasic(C.amber, { radiance: 2.6 });
       var auraMat = matBasic(C.amber, {
         transparent: true, opacity: 0.14, blending: 'additive',
         depthWrite: false, fog: false
@@ -6575,23 +8127,29 @@
       aura.scale.set(0.9, 0.62, 0.82);
       group.add(aura);
 
-      var back = new THREE.Mesh(G.box, mountMat);
-      back.position.set(0, 0, -0.32);
-      back.scale.set(0.9, 0.9, 0.36);
-      group.add(back);
-
       var head = new THREE.Group();
-      var housing = new THREE.Mesh(G.box, mountMat);
-      housing.scale.set(0.62, 0.4, 0.5);
-      head.add(housing);
-      var barrel = new THREE.Mesh(G.box, matBasic(0x9db4ca));
-      barrel.position.set(0, 0, 0.5);
-      barrel.scale.set(0.14, 0.14, 0.8);
-      head.add(barrel);
-      var muzzleGlow = new THREE.Mesh(G.box, glowMat);
-      muzzleGlow.position.set(0, 0, 0.92);
-      muzzleGlow.scale.set(0.2, 0.2, 0.08);
-      head.add(muzzleGlow);
+      if (highVisuals) {
+        var pedestal = modelPart(group, G.cylinder, IM.steelDark, 0, -0.42, -0.2, 0.49, 0.29, 0.49);
+        pedestal.castShadow = true;
+        modelPart(group, HULL.shield, mountMat, 0, -0.085, -0.28, 0.87, 0.63, 0.64);
+        var headArmor = modelPart(head, HULL.cowl, IM.cranePaint, 0, 0.105, 0.026, 1.02, 0.50, 0.75);
+        headArmor.castShadow = true;
+        modelPart(head, HULL.housing, IM.steelDeep, 0, -0.075, 0.164, 0.86, 0.29, 0.57);
+        modelPart(head, G.box, glowMat, 0, 0.16, 0.382, 0.34, 0.062, 0.045);
+        for (var cannon = -1; cannon <= 1; cannon += 2) {
+          var tube = modelPart(head, G.cylinder, IM.casting, cannon * 0.235, -0.025, 0.58, 0.112, 0.68, 0.112);
+          tube.rotation.x = Math.PI / 2;
+          modelPart(head, HULL.housing, IM.steelDark, cannon * 0.235, -0.025, 0.855, 0.24, 0.23, 0.24);
+          var muzzleLip = modelPart(head, G.torus, IM.casting, cannon * 0.235, -0.025, 0.976, 0.072, 0.072, 0.072);
+          muzzleLip.rotation.x = Math.PI / 2;
+          modelPart(head, G.box, glowMat, cannon * 0.235, -0.025, 0.975, 0.09, 0.069, 0.013);
+        }
+      } else {
+        modelPart(group, G.box, mountMat, 0, 0, -0.32, 0.9, 0.9, 0.36);
+        modelPart(head, G.box, mountMat, 0, 0, 0, 0.62, 0.4, 0.5);
+        modelPart(head, G.box, matBasic(0x9db4ca), 0, 0, 0.5, 0.14, 0.14, 0.8);
+        modelPart(head, G.box, glowMat, 0, 0, 0.92, 0.2, 0.2, 0.08);
+      }
       var halo = new THREE.Mesh(G.torus, glowMat);
       halo.rotation.x = Math.PI / 2;
       halo.scale.set(0.42, 0.42, 0.42);
@@ -6943,27 +8501,41 @@
       group.add(auraCore);
 
       var coreMat = matLambert(0x2a0a1e, {
-        emissive: 0xff3a9a, specular: 0.62, roughness: 0.24
+        emissive: 0xff3a9a, specular: 0.62, roughness: 0.24, radiance: 1.78
       });
+      tuneSurface(coreMat, 0.86, 0.55, 0.34);
+      tuneTexture(coreMat, DETAIL_TILE.water, 0.9, 0.5);
       var core = new THREE.Mesh(G.sphere, coreMat);
       core.scale.setScalar(0.92);
       group.add(core);
 
-      var eyeMat = matBasic(0xffe3f4);
-      var eye = new THREE.Mesh(G.lowSphere, eyeMat);
-      eye.scale.setScalar(0.34);
-      eye.position.set(0, 0, 0.74);
-      group.add(eye);
+      var eyeMat = matBasic(0xffe3f4, { radiance: 3.5 });
+      if (highVisuals) {
+        var lensSeat = modelPart(group, HULL.housing, IM.steelDark, 0, 0.04, 0.82, 0.82, 0.52, 0.26);
+        lensSeat.castShadow = true;
+        var lensRing = modelPart(group, G.torus, IM.casting, 0, 0.04, 0.97, 0.22, 0.19, 0.22);
+        lensRing.rotation.x = Math.PI / 2;
+        modelPart(group, G.lowSphere, eyeMat, 0, 0.04, 0.995, 0.19, 0.16, 0.10);
+        for (var optic = -1; optic <= 1; optic += 2) {
+          modelPart(group, HULL.cowl, IM.craneIvory, optic * 0.42, 0.19, 0.73,
+            0.36, 0.29, 0.31, optic * 0.56, optic * 0.22);
+          modelPart(group, G.box, IM.lampRed, optic * 0.36, -0.1, 0.91, 0.13, 0.032, 0.035);
+        }
+      } else {
+        modelPart(group, G.lowSphere, eyeMat, 0, 0, 0.74, 0.34, 0.34, 0.34);
+      }
 
-      var plateGeo = new THREE.BoxGeometry(1.8, 0.5, 0.82);
-      plateGeo._owned = true;
-      var plateMat = matLambert(0x1c2940, {
+      var plateGeo = highVisuals ? HULL.shield : new THREE.BoxGeometry(1.8, 0.5, 0.82);
+      if (!highVisuals) plateGeo._owned = true;
+      var plateMat = matLambert(highVisuals ? 0x435769 : 0x1c2940, {
         emissive: 0x0b1424, specular: 0.55, roughness: 0.3
       });
+      tuneSurface(plateMat, 0.94, 0.78, 0.42);
+      tuneTexture(plateMat, DETAIL_TILE.metal, 0.72, 0.75);
       var plates = [];
       for (var i = 0; i < 3; i++) {
         var angle = i * Math.PI * 2 / 3;
-        var plate = new THREE.Mesh(plateGeo, plateMat);
+        var plate = highVisuals ? new THREE.Group() : new THREE.Mesh(plateGeo, plateMat);
         plate.position.set(Math.cos(angle) * 1.15, 0, Math.sin(angle) * 1.15);
         plate.rotation.y = -angle + Math.PI / 2;
         group.add(plate);
@@ -6972,7 +8544,7 @@
 
       var ringMat = matBasic(0xff5fc8, {
         transparent: true, opacity: 0.9, blending: 'additive',
-        depthWrite: false, fog: false
+        depthWrite: false, fog: false, radiance: 1.68
       });
       var ringGeo = new THREE.TorusGeometry(1.95, 0.05, 4, 32);
       ringGeo._owned = true;
@@ -6982,7 +8554,7 @@
 
       var ring2Mat = matBasic(C.violet, {
         transparent: true, opacity: 0.7, blending: 'additive',
-        depthWrite: false, fog: false
+        depthWrite: false, fog: false, radiance: 1.62
       });
       var ring2Geo = new THREE.TorusGeometry(1.7, 0.035, 4, 28);
       ring2Geo._owned = true;
@@ -6990,6 +8562,108 @@
       ring2.rotation.x = 1.3;
       ring2.rotation.z = 0.5;
       group.add(ring2);
+
+      // V5 boss armour detail: shared materials and primitive geometry, built
+      // once with the boss pool.  The trim material is tinted by the enrage
+      // phase so the extra plates read as part of the same armour system.
+      var bossTrimMat = matLambert(highVisuals ? 0x899ba4 : 0x4d6184, {
+        emissive: 0x101b2c, specular: 0.72, roughness: 0.24, metalness: 0.78, detail: 0.3
+      });
+      tuneTexture(bossTrimMat, DETAIL_TILE.metal, 0.8, 0.7);
+      var bossVentMat = matLambert(0x07040a, {
+        emissive: 0x000000, specular: 0.08, roughness: 0.85, metalness: 0.2, detail: 0.15
+      });
+      tuneTexture(bossVentMat, DETAIL_TILE.chips, 1.1, 0.45);
+      var pi;
+      for (pi = 0; pi < plates.length; pi++) {
+        if (highVisuals) {
+          var mount = plates[pi].mesh;
+          var shieldShell = modelPart(mount, plateGeo, plateMat, 0, 0, 0, 1.84, 0.72, 0.74);
+          shieldShell.castShadow = true;
+          modelPart(mount, HULL.cowl, bossTrimMat, 0, 0.243, 0.145, 1.79, 0.30, 0.61);
+          modelPart(mount, HULL.housing, bossVentMat, 0, -0.014, 0.378, 1.47, 0.32, 0.073);
+          modelPart(mount, G.box, coreMat, 0, 0.036, 0.428, 1.26, 0.041, 0.026);
+          for (var tooth = -1; tooth <= 1; tooth += 2) {
+            modelPart(mount, HULL.shield, bossTrimMat, tooth * 0.52, 0.39, -0.026,
+              0.42, 0.50, 0.64, tooth * 0.15, tooth * -0.36);
+            modelPart(mount, HULL.cowl, plateMat, tooth * 0.53, -0.32, 0.012,
+              0.45, 0.46, 0.59, tooth * 0.13, tooth * 0.30);
+            modelPart(mount, G.box, IM.railPaint, tooth * 0.52, -0.285, 0.309, 0.21, 0.055, 0.023, 0, tooth * 0.30);
+          }
+          for (var slot = -2; slot <= 2; slot++) {
+            modelPart(mount, G.box, bossTrimMat, slot * 0.236, -0.093, 0.421,
+              0.088, 0.073, 0.031, 0, -0.22);
+          }
+          continue;
+        }
+        var pa = plates[pi].angle;
+        var pcx = Math.cos(pa) * 1.15;
+        var pcz = Math.sin(pa) * 1.15;
+        var prot = -pa + Math.PI / 2;
+        var pnx = Math.cos(pa), pnz = Math.sin(pa);
+        var ptx = Math.sin(pa), ptz = -Math.cos(pa);
+        var faceX = pcx + pnx * 0.43;
+        var faceZ = pcz + pnz * 0.43;
+        var bi, bx, bz;
+        for (bi = -1; bi <= 1; bi += 2) {
+          var band = new THREE.Mesh(G.box, bossTrimMat);
+          band.position.set(faceX, bi * 0.165, faceZ);
+          band.rotation.y = prot;
+          band.scale.set(1.5, 0.045, 0.02);
+          group.add(band);
+        }
+        for (bi = -1; bi <= 1; bi++) {
+          bx = faceX + ptx * (bi * 0.62);
+          bz = faceZ + ptz * (bi * 0.62);
+          var bolt = new THREE.Mesh(G.box, bossTrimMat);
+          bolt.position.set(bx, 0.19, bz);
+          bolt.rotation.y = prot;
+          bolt.scale.set(0.07, 0.07, 0.03);
+          group.add(bolt);
+        }
+        var vent = new THREE.Mesh(G.box, bossVentMat);
+        vent.position.set(faceX, -0.06, faceZ);
+        vent.rotation.y = prot;
+        vent.scale.set(0.46, 0.15, 0.02);
+        group.add(vent);
+        var slit = new THREE.Mesh(G.box, coreMat);
+        slit.position.set(faceX, 0.02, faceZ);
+        slit.rotation.y = prot;
+        slit.scale.set(0.5, 0.025, 0.012);
+        group.add(slit);
+        var tab = new THREE.Mesh(G.box, IM.hazard);
+        tab.position.set(faceX + ptx * 0.52, -0.15, faceZ + ptz * 0.52);
+        tab.rotation.y = prot;
+        tab.scale.set(0.26, 0.065, 0.014);
+        group.add(tab);
+      }
+      for (pi = 0; pi < 6; pi++) {
+        var ra = pi / 6 * Math.PI * 2;
+        var rib = new THREE.Mesh(G.box, bossTrimMat);
+        rib.position.set(
+          Math.cos(ra) * 1.0,
+          pi % 2 ? 0.62 : -0.62,
+          Math.sin(ra) * 1.0
+        );
+        rib.rotation.y = -ra;
+        rib.scale.set(0.5, 0.075, 0.16);
+        group.add(rib);
+      }
+      for (pi = -1; pi <= 1; pi += 2) {
+        var coreBand = new THREE.Mesh(G.torus, bossTrimMat);
+        coreBand.rotation.x = Math.PI / 2;
+        coreBand.position.y = pi * 0.2;
+        coreBand.scale.setScalar(1.01);
+        group.add(coreBand);
+      }
+      for (pi = 0; pi < 3; pi++) {
+        var va = pi / 3 * Math.PI * 2 + 0.3;
+        var exh = new THREE.Mesh(G.box, bossVentMat);
+        exh.position.set(Math.cos(va) * 0.72, -0.92, Math.sin(va) * 0.72);
+        exh.rotation.y = -va;
+        exh.scale.set(0.3, 0.18, 0.2);
+        group.add(exh);
+      }
 
       // Grounded phase light: two additive pools that follow the core while
       // staying on the arena floor (their local Y is corrected each frame).
@@ -7037,6 +8711,8 @@
         eyeMat: eyeMat,
         plates: plates,
         plateMat: plateMat,
+        bossTrimMat: bossTrimMat,
+        bossVentMat: bossVentMat,
         ring: ring,
         ring2: ring2,
         aura: aura,
@@ -7067,6 +8743,8 @@
         eyeMat: built.eyeMat,
         plates: built.plates,
         plateMat: built.plateMat,
+        bossTrimMat: built.bossTrimMat,
+        bossVentMat: built.bossVentMat,
         ring: built.ring,
         ring2: built.ring2,
         aura: built.aura,
@@ -7139,8 +8817,12 @@
       b.coreMat.color.setHex(0x2a0a1e);
       b.coreMat.emissive.setHex(0xff3a9a);
       b.eyeMat.color.setHex(0xffe3f4);
-      b.plateMat.color.setHex(0x1c2940);
+      b.plateMat.color.setHex(highVisuals ? 0x435769 : 0x1c2940);
       b.plateMat.emissive.setHex(0x0b1424);
+      if (b.bossTrimMat) {
+        b.bossTrimMat.color.setHex(highVisuals ? 0x899ba4 : 0x4d6184);
+        b.bossTrimMat.emissive.setHex(0x101b2c);
+      }
       for (var p = 0; p < b.plates.length; p++) {
         var plate = b.plates[p];
         plate.mesh.position.set(Math.cos(plate.angle) * 1.15, 0, Math.sin(plate.angle) * 1.15);
@@ -7232,6 +8914,10 @@
         if (boss.plateMat) {
           boss.plateMat.color.setHex(0x160307);
           boss.plateMat.emissive.setHex(0x3d0505);
+        }
+        if (boss.bossTrimMat) {
+          boss.bossTrimMat.color.setHex(0x5c1518);
+          boss.bossTrimMat.emissive.setHex(0x2a0404);
         }
         flashScreen(0xff2d2d, true);
         addToast('ENRAGED // 守门者核心过载', 'boss');
@@ -7610,10 +9296,10 @@
           chargeOuter: fxAdditive(0xff4d6d, 0.1),
           chargeCore: fxAdditive(0xffffff, 0.5),
           beamHalo: fxAdditive(0xff4d6d, 0.2),
-          beamMid: fxAdditive(0xff4d6d, 0.65),
-          beamCore: fxAdditive(0xffffff, 0.95),
-          impact: fxAdditive(0xffffff, 0.8),
-          surge: fxAdditive(0xffffff, 0.9)
+          beamMid: fxAdditive(0xff4d6d, 0.65, 1.9),
+          beamCore: fxAdditive(0xffffff, 0.95, 3.4),
+          impact: fxAdditive(0xffffff, 0.8, 2.7),
+          surge: fxAdditive(0xffffff, 0.9, 2.2)
         };
         var parts = {};
         parts.warnFloor = new THREE.Mesh(G.box, mats.warnFloor);
@@ -8654,6 +10340,7 @@
     /* --------------------------------------------------------------- menu */
 
     var menuT = 0;
+    var menuLook = new THREE.Vector3(0, 2.0, -32);
     var worldClock = 0;
 
     function updateMenu(dt) {
@@ -8664,7 +10351,7 @@
         5.6 + Math.sin(menuT * 0.23) * 0.5,
         -8 + Math.cos(menuT * 0.06) * 19
       );
-      aimCameraAt(new THREE.Vector3(0, 2.0, -32));
+      aimCameraAt(menuLook);
       if (Math.abs(camera.fov - 66) > 0.01) {
         camera.fov = 66;
         camera.updateProjectionMatrix();
@@ -8791,7 +10478,7 @@
       updateSlashFx(dt);
       updateBulletTrails(dt);
       updateAmbient(dt);
-      renderer.render(scene, camera);
+      renderer.render(scene, camera, worldClock);
     }
 
     /* --------------------------------------------------------------- wiring */
@@ -8841,7 +10528,9 @@
     // Read-only development hook used for smoke checks.  It allocates only when
     // snapshot() is called and never touches the HUD or gameplay state.
     window.__PB_LIGHTING__ = {
-      maxLocalLights: THREE.MAX_LOCAL_LIGHTS || 5,
+      maxLocalLights: renderer.maxLocalLights,
+      activeLimit: QUALITY.maxLocalLights,
+      quality: renderer.quality,
       shadowSlots: CONTACT_SHADOW_LIMIT,
       snapshot: function () {
         var out = [];
@@ -8850,6 +10539,8 @@
           out.push({
             key: e.key,
             visible: e.light.visible,
+            quality: renderer.quality,
+            activeLimit: QUALITY.maxLocalLights,
             intensity: Math.round(e.light.intensity * 1000) / 1000,
             distance: e.light.distance,
             x: Math.round(e.light.position.x * 1000) / 1000,
@@ -8858,6 +10549,137 @@
           });
         }
         return out;
+      }
+    };
+
+    // Read-only inspection of the active pipeline and allocated resources.
+    window.__PB_RENDERING__ = {
+      version: 6,
+      build: 'V6',
+      backend: renderer.isWebGL2 ? 'webgl2' : 'fallback',
+      quality: renderer.quality,
+      snapshot: function () {
+        var active = 0;
+        for (var i = 0; i < localLights.length; i++) {
+          if (localLights[i].light.visible) active++;
+        }
+        var caps = renderer.capabilities || {};
+        var high = renderer._high;
+        var hasAtlas = !!(surfaceDetailTexture && surfaceDetailTexture._glTexture);
+        var cssW = canvas ? canvas.clientWidth : 0;
+        var cssH = canvas ? canvas.clientHeight : 0;
+        return {
+          version: 6,
+          build: 'V6',
+          backend: renderer.isWebGL2 ? 'webgl2' : 'fallback',
+          contextType: renderer.backend,
+          webgl2: renderer.isWebGL2,
+          requestedQuality: QUALITY.requested,
+          quality: renderer.quality,
+          selectedProfile: QUALITY.name,
+          degraded: QUALITY.degraded,
+          profileReason: QUALITY.reason,
+          shaderVariant: QUALITY.shaderVariant,
+          reducedShader: QUALITY.shaderVariant === 'compat',
+          uniformBudget: renderer.uniformBudget || 0,
+          detailScale: renderer._detailScale,
+          internalResolution: { width: RES_W, height: RES_H },
+          backbuffer: {
+            width: canvas ? canvas.width : 0,
+            height: canvas ? canvas.height : 0
+          },
+          displayCssResolution: { width: cssW, height: cssH },
+          aspect: '16:9',
+          cssScaling: QUALITY.name === 'high' ? 'smooth' : 'nearest-neighbor',
+          pixelated: QUALITY.name !== 'high',
+          antialias: false,
+          maxLocalLights: renderer.maxLocalLights,
+          maxRenderResolution: {
+            width: renderer.maxRenderWidth || 0,
+            height: renderer.maxRenderHeight || 0
+          },
+          activeLocalLimit: QUALITY.maxLocalLights,
+          activeLocalLights: active,
+          localLightCandidates: localLights.length,
+          capability: {
+            webglVersion: caps.webglVersion || '',
+            glslVersion: caps.glslVersion || '',
+            maxTextureSize: caps.maxTextureSize || 0,
+            maxRenderbufferSize: caps.maxRenderbufferSize || 0,
+            maxFragmentUniformVectors: caps.maxFragmentUniformVectors || 0,
+            maxSamples: caps.maxSamples || 0,
+            anisotropy: caps.anisotropy || 0,
+            vendor: caps.vendor || '',
+            renderer: caps.renderer || ''
+          },
+          features: {
+            proceduralAtlas: !!(TEX && TEX.containerDetail),
+            bakedPixelDetail: true,
+            pbrLite: !renderer.profile || renderer.profile.pbrLite !== false,
+            steppedSpecular: !high && renderer.profile.pbrLite,
+            worldSpaceDetailGrain: !high && renderer.profile.pbrLite,
+            directionalSunShadows: !!high || QUALITY.extraDetail,
+            dynamicContactShadows: true,
+            bakedGlowStreaks: true,
+            geometryVolumetricBeams: true,
+            textureSampling: !!surfaceLayers || hasAtlas,
+            textureSampler: surfaceLayers ? 'two 256x256 texture arrays with eight surface layers each' :
+              (hasAtlas ? 'shared 256x128 Canvas2D atlas with eight 64px tiles' : 'disabled'),
+            textureProjection: high ? 'dominant-axis world projection and object-space viewmodels' :
+              (hasAtlas ? 'triplanar world projection and object-space unlit viewmodels' : 'disabled'),
+            textureFiltering: high ? 'linear and mipmapped, with distance fade' :
+              (hasAtlas ? 'nearest with distance fade' : 'disabled'),
+            unlitObjectSpaceSampling: hasAtlas,
+            normalMapping: !!surfaceLayers,
+            roughnessAndAOMaps: !!surfaceLayers,
+            realShadowMap: !!high,
+            postProcessBloom: !!high,
+            hdr: !!(high && high.hdr),
+            proceduralSky: !!high,
+            skyReflections: !!high,
+            viewmodelDepth: !!high,
+            ssao: false,
+            ssr: false,
+            globalIllumination: false,
+            rayTracing: false,
+            volumetricScattering: false
+          },
+          resources: {
+            batches: batchList.length,
+            staticArtVerts: artVerts,
+            v5DetailVerts: v5DetailVerts,
+            atlasTextures: Object.keys(TEX).filter(function (key) { return !!TEX[key]; }).length,
+            surfaceDetailAtlas: hasAtlas,
+            surfaceAtlasTiles: hasAtlas ? 8 : 0,
+            surfaceAtlasBytes: surfaceAtlasCanvas ? surfaceAtlasCanvas.width * surfaceAtlasCanvas.height * 4 : 0,
+            surfaceArrayLayers: surfaceLayers ? surfaceLayers.count : 0,
+            surfaceArrayBytes: surfaceLayers ? surfaceLayers.bytes : 0,
+            shadowMapSize: high ? high.shadowSize : 0,
+            movingShadowCasters: high ? high.movingCasters.length : 0,
+            lastShadowDraws: high ? high.shadowDraws : 0,
+            bloomResolution: high ? { width: high.bloomWidth, height: high.bloomHeight } : null,
+            sceneColorFormat: high ? (high.hdr ? 'RGBA16F' : 'RGBA8') : 'default framebuffer',
+            renderTargets: high ? high.targets.length : 0,
+            sentinelPool: SENTINEL_POOL_SIZE,
+            turretPool: TURRET_POOL_SIZE,
+            bossPool: bossPool ? 1 : 0,
+            contactShadowSlots: CONTACT_SHADOW_LIMIT,
+            activeContactShadowLimit: Math.min(QUALITY.contactShadows, CONTACT_SHADOW_LIMIT)
+          },
+          qualityProfiles: {
+            high: { width: 1920, height: 1080, localLights: 8, detailScale: 1.0, textureMix: 1.0, contactShadows: 12 },
+            balanced: { width: 960, height: 540, localLights: 5, detailScale: 0.8, textureMix: 0.85, contactShadows: 12 },
+            fallback: { width: 640, height: 360, localLights: 4, detailScale: 0.45, textureMix: 0.55, contactShadows: 6 }
+          },
+          limitations: high ? [
+            'One fixed directional shadow volume covers the playable quay.',
+            'Wet surfaces and waves reflect the procedural sky. Scene reflections and refraction are absent.',
+            'The material model uses light lobes and baked or pooled contact darkening. SSAO, global illumination and volumetric scattering are absent.'
+          ] : [
+            'Legacy lighting uses baked shadow decals and additive glow geometry.',
+            'WebGL1 forces Fallback. Its lowest uniform profile disables the surface sampler.'
+          ]
+        };
       }
     };
 
@@ -8880,8 +10702,8 @@
         particles: MAX.particles,
         sentinels: SENTINEL_POOL_SIZE,
         turrets: TURRET_POOL_SIZE,
-        bosses: bossPool ? 1 : 0,
-        localLights: THREE.MAX_LOCAL_LIGHTS || 5,
+        get bosses() { return bossPool ? 1 : 0; },
+        localLights: renderer.maxLocalLights,
         shadowSlots: CONTACT_SHADOW_LIMIT
       },
       snapshot: function () {
@@ -8935,6 +10757,7 @@
     };
 
     buildArena();
+    renderer.prepare(scene);
     resetRunState();
     hud.classList.add('is-hidden');
     showOverlay('menu');
