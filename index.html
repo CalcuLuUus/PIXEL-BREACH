@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
-  <meta name="description" content="PIXEL//BREACH 落日船坞 —— 原生 HTML/CSS/JS + WebGL 的像素风 3D 第一人称射击 Demo。">
+  <meta name="description" content="PIXEL//BREACH 落日船坞 —— 原生 HTML/CSS/JS + WebGL 的写实工业港 3D 第一人称射击 Demo。">
   <title>PIXEL//BREACH — 断层突围</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -21,15 +21,16 @@
       </div>
       <div class="topline-right">
         <span class="link-state"><i aria-hidden="true"></i>LINK STABLE</span>
-        <span class="build">BUILD 0.3.0 · V6</span>
+        <span class="build">BUILD 0.5.0 · V8</span>
       </div>
     </header>
 
     <section class="stage" id="stage">
-      <canvas id="scene" width="960" height="540" tabindex="0" role="application"
+      <canvas id="scene" width="1920" height="1080" tabindex="0" role="application"
         aria-label="PIXEL//BREACH 游戏画面。WASD 移动，鼠标转向，左键攻击，1/2/3 切换武器，R 换弹，Space 跳跃，Shift 冲刺，Q 相位突进，F 过载脉冲，E 补给或出口交互，Esc 暂停，Enter 确认。">你的浏览器需要支持 WebGL 才能运行本游戏。</canvas>
 
-      <div class="fx scanlines" aria-hidden="true"></div>
+      <span class="quality-hud" id="qualityHud" hidden></span>
+      <p class="loading-status" id="loadingStatus" role="status">正在加载本地船坞资源…</p>
       <div class="fx vignette" aria-hidden="true"></div>
       <div class="damage" id="damageFlash" aria-hidden="true"></div>
       <div class="flash" id="screenFlash" aria-hidden="true"></div>
@@ -43,11 +44,12 @@
         <div class="hud-block hud-wave">
           <p class="wave-label" id="waveLabel">STANDBY</p>
           <p class="wave-sub" id="enemyCount">敌人 00</p>
+          <p class="alert-state" id="alertState" hidden></p>
         </div>
 
         <div class="hud-supply" id="supplyPanel" hidden>
           <div class="supply-head">
-            <span class="supply-key">E</span>
+            <span class="supply-key" data-binding="interact">E</span>
             <span class="supply-name" id="supplyName">入口补给点</span>
           </div>
           <div class="supply-track"><i id="supplyFill"></i></div>
@@ -64,6 +66,7 @@
             <span class="boss-pip pip-a" aria-hidden="true"></span>
             <span class="boss-pip pip-b" aria-hidden="true"></span>
           </div>
+          <p class="boss-warning" id="bossWarning" hidden></p>
           <div class="boss-foot">
             <span id="bossHpText">500 / 500</span>
             <span class="boss-state" id="bossState">CORE ONLINE</span>
@@ -78,7 +81,7 @@
           <div class="hp-track"><div class="hp-fill" id="hpFill"></div></div>
           <div class="abilities">
             <div class="ability" id="dashAbility">
-              <span class="ability-key">Q</span>
+              <span class="ability-key" data-binding="dash">Q</span>
               <span class="ability-body">
                 <span class="ability-name">相位突进</span>
                 <span class="cd-track"><i id="dashFill"></i></span>
@@ -86,7 +89,7 @@
               <span class="ability-cd" id="dashCd">就绪</span>
             </div>
             <div class="ability" id="pulseAbility">
-              <span class="ability-key">F</span>
+              <span class="ability-key" data-binding="pulse">F</span>
               <span class="ability-body">
                 <span class="ability-name">过载脉冲</span>
                 <span class="cd-track"><i id="pulseFill"></i></span>
@@ -112,9 +115,9 @@
             <span class="reload-tag" id="reloadTag" hidden>RELOADING // 装填中</span>
           </div>
           <div class="slots" id="weaponSlots">
-            <span class="slot active" data-slot="0">1</span>
-            <span class="slot" data-slot="1">2</span>
-            <span class="slot" data-slot="2">3</span>
+            <span class="slot active" data-slot="0" data-binding="rifle">1</span>
+            <span class="slot" data-slot="1" data-binding="scatter">2</span>
+            <span class="slot" data-slot="2" data-binding="blade">3</span>
           </div>
         </div>
 
@@ -127,10 +130,13 @@
         </div>
 
         <div class="hint" id="hint" hidden><kbd>E</kbd> 接入出口</div>
+        <div class="damage-direction" id="damageDirection" hidden aria-hidden="true"><i></i></div>
         <div class="banner" id="banner" hidden></div>
       </div>
 
       <div class="toasts" id="toasts" aria-live="polite"></div>
+      <p class="radio-caption" id="radioCaption" hidden aria-live="polite"></p>
+      <p class="scene-shot" id="sceneShot" hidden></p>
 
       <div class="overlay" id="overlay">
         <div class="panel" id="panel">
@@ -142,36 +148,99 @@
           <div class="panel-stats" id="ovStats" hidden></div>
 
           <div class="panel-controls" id="ovControls">
-            <div class="ctrl"><kbd>W A S D</kbd><span>移动</span></div>
+            <div class="ctrl"><kbd id="walkKeys">W A S D</kbd><span>移动</span></div>
             <div class="ctrl"><kbd>鼠标</kbd><span>转向 / 瞄准</span></div>
             <div class="ctrl"><kbd>左键</kbd><span>攻击</span></div>
-            <div class="ctrl"><kbd>1 2 3</kbd><span>切换武器</span></div>
-            <div class="ctrl"><kbd>R</kbd><span>换弹</span></div>
-            <div class="ctrl"><kbd>SPACE</kbd><span>跳跃 / 登上箱顶</span></div>
-            <div class="ctrl"><kbd>SHIFT</kbd><span>冲刺</span></div>
-            <div class="ctrl"><kbd>Q</kbd><span>相位突进（空中一次）</span></div>
-            <div class="ctrl"><kbd>F</kbd><span>过载脉冲</span></div>
-            <div class="ctrl"><kbd>E</kbd><span>补给 / 出口交互</span></div>
+            <div class="ctrl"><kbd id="weaponKeys">1 2 3</kbd><span>切换武器</span></div>
+            <div class="ctrl"><kbd data-binding="reload">R</kbd><span>换弹</span></div>
+            <div class="ctrl"><kbd data-binding="jump">SPACE</kbd><span>跳跃 / 登上箱顶</span></div>
+            <div class="ctrl"><kbd data-binding="sprint">SHIFT</kbd><span>冲刺</span></div>
+            <div class="ctrl"><kbd data-binding="dash">Q</kbd><span>相位突进（空中一次）</span></div>
+            <div class="ctrl"><kbd data-binding="pulse">F</kbd><span>过载脉冲</span></div>
+            <div class="ctrl"><kbd data-binding="interact">E</kbd><span>补给 / 出口交互</span></div>
             <div class="ctrl"><kbd>ESC</kbd><span>暂停 / 释放鼠标</span></div>
           </div>
 
-          <button class="panel-btn" id="ovBtn" type="button">开始突入 <kbd>ENTER</kbd></button>
+          <div class="panel-actions">
+            <button class="panel-btn" id="ovBtn" type="button" disabled>开始突入 <kbd>ENTER</kbd></button>
+            <button class="secondary-btn" id="settingsOpen" type="button">设置</button>
+            <button class="secondary-btn" id="audioPreview" type="button">启用声音</button>
+            <button class="secondary-btn" id="menuView" type="button">切换视角</button>
+          </div>
           <p class="panel-foot" id="ovFoot">点击开始 · 浏览器会锁定鼠标指针</p>
         </div>
+        <p class="menu-location" id="menuLocation">入口安检区</p>
       </div>
+
+      <dialog class="settings-panel" id="settingsPanel" aria-labelledby="settingsTitle">
+        <div class="settings-header">
+          <h2 id="settingsTitle">设置</h2>
+          <button class="secondary-btn" id="settingsClose" type="button" autofocus>返回</button>
+        </div>
+        <form id="settingsForm">
+          <fieldset>
+            <legend>画质</legend>
+            <label>画质档位
+              <select name="quality"><option value="high">高</option><option value="balanced">均衡</option><option value="fallback">兼容</option></select>
+            </label>
+            <label>动态分辨率 <input type="checkbox" name="dynamic"></label>
+            <label>渲染比例上限 <input name="scale" type="range" min=".5" max="1" step=".05"><output></output></label>
+            <label>阴影
+              <select name="shadows"><option value="auto">随画质</option><option value="low">基础</option></select>
+            </label>
+            <label>纹理
+              <select name="textures"><option value="auto">随画质</option><option value="low">512 px</option></select>
+            </label>
+            <label>反射
+              <select name="reflections"><option value="auto">随画质</option><option value="sea">仅海面</option><option value="off">天空近似</option></select>
+            </label>
+            <label>后处理 <input type="checkbox" name="post"></label>
+            <label>泛光 <input name="bloom" type="range" min="0" max=".7" step=".01"><output></output></label>
+          </fieldset>
+          <fieldset>
+            <legend>镜头与可访问性</legend>
+            <label>视野 <input name="fov" type="range" min="55" max="100" step="1"><output></output></label>
+            <label>鼠标灵敏度 <input name="sensitivity" type="range" min=".25" max="3" step=".05"><output></output></label>
+            <label>镜头晃动 <input name="shake" type="range" min="0" max="1" step=".05"><output></output></label>
+            <label>突进运动模糊 <input type="checkbox" name="motionBlur"></label>
+            <label>电台字幕 <input type="checkbox" name="subtitles"></label>
+            <label>高对比度与色觉辅助 <input type="checkbox" name="contrast"></label>
+            <label>低刺激模式 <input type="checkbox" name="reducedMotion"></label>
+          </fieldset>
+          <fieldset>
+            <legend>音量</legend>
+            <label>总音量 <input name="vol-master" type="range" min="0" max="1" step=".05"><output></output></label>
+            <label>音乐 <input name="vol-music" type="range" min="0" max="1" step=".05"><output></output></label>
+            <label>战斗音效 <input name="vol-sfx" type="range" min="0" max="1" step=".05"><output></output></label>
+            <label>电台 <input name="vol-voice" type="range" min="0" max="1" step=".05"><output></output></label>
+            <label>环境 <input name="vol-ambience" type="range" min="0" max="1" step=".05"><output></output></label>
+            <label>界面 <input name="vol-ui" type="range" min="0" max="1" step=".05"><output></output></label>
+          </fieldset>
+          <fieldset>
+            <legend>键位</legend>
+            <div class="settings-keys" id="settingsKeys"></div>
+          </fieldset>
+          <div class="settings-actions">
+            <button class="secondary-btn" id="settingsReset" type="button">恢复默认设置</button>
+            <button class="secondary-btn" id="settingsRebuild" type="button" hidden>应用画质并重新载入</button>
+            <p id="settingsStatus" role="status"></p>
+          </div>
+        </form>
+      </dialog>
 
       <div class="fatal" id="fatal" hidden>
         <div class="fatal-panel">
           <p class="panel-kicker">SYSTEM FAULT</p>
           <h2>无法启动 3D 渲染</h2>
           <p id="fatalText">本浏览器未启用 WebGL。请更换浏览器或开启硬件加速后重试。</p>
+          <button class="panel-btn" id="reloadGame" type="button">重新加载</button>
           <p class="fatal-path">离线依赖：vendor/three.min.js</p>
         </div>
       </div>
     </section>
 
     <footer class="footline">
-      <span>WASD 移动 · SPACE 跳跃 · 左键攻击 · 1/2/3 武器 · R 换弹 · Q/F 技能 · E 补给/出口 · ESC 暂停</span>
+      <span>左键攻击 · I 检查武器 · X 跳过镜头 · Esc 暂停</span>
       <span class="footline-right">NO NETWORK // PURE WEBGL</span>
     </footer>
   </main>
@@ -180,6 +249,22 @@
     <p style="color:#ff6b8b;text-align:center;font-family:monospace">需要启用 JavaScript 才能进入断层。</p>
   </noscript>
 
+  <script src="src/quality.js" defer></script>
+  <script src="src/model-kit.js" defer></script>
+  <script src="src/port-setpieces.js" defer></script>
+  <script src="src/dock-art.js" defer></script>
+  <script src="src/combat-visuals.js" defer></script>
+  <script src="src/core/events.js" defer></script>
+  <script src="src/core/resolution.js" defer></script>
+  <script src="src/core/assets.js" defer></script>
+  <script src="src/ui/settings.js" defer></script>
+  <script src="src/game/mission.js" defer></script>
+  <script src="src/game/enemy-director.js" defer></script>
+  <script src="src/camera/cinematics.js" defer></script>
+  <script src="src/audio/dock-audio.js" defer></script>
+  <script src="src/scene/sector-detail.js" defer></script>
+  <script src="src/scene/interactions.js" defer></script>
+  <script src="src/tools/benchmark.js" defer></script>
   <script src="game.js" defer></script>
 </body>
 </html>

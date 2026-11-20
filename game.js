@@ -1,11 +1,12 @@
 /* ==========================================================================
    PIXEL//BREACH — 断层突围
-   A 3D pixel-styled first-person breach demo.
+   A 3D realistic first-person dockyard breach demo.
 
-   Rendering : High 1920x1080 WebGL2 / Balanced 960x540 / Fallback 640x360
-               backbuffer (16:9), CSS presentation scaled to the viewport;
-               WebGL1 picks a uniform-budget-safe shader/light count at startup
-   Assets    : none — procedural geometry, materials, Canvas2D atlas and lights
+   Rendering : High 1920x1080 / Balanced 1600x900 / Fallback 960x540
+               internal backbuffer (16:9) with bounded dynamic resolution,
+               presented smoothly to the viewport; WebGL1 picks a
+               uniform-budget-safe forward shader and light count at startup
+   Assets    : local procedural meshes, surface layers, decals and Web Audio
    Network   : none. vendor/three.min.js is a local offline build.
    ========================================================================== */
 
@@ -27,6 +28,7 @@
     var text = byId('fatalText');
     if (text && message) text.textContent = message;
     if (box) box.hidden = false;
+    byId('loadingStatus').hidden = true;
   }
 
   function loadVendor() {
@@ -51,10 +53,10 @@
   }
 
   function init() {
+    byId('reloadGame').addEventListener('click', function () { window.location.reload(); });
     loadVendor().then(start).catch(function (err) {
       console.error('[PIXEL//BREACH]', err);
-      fatal('本地 3D 依赖加载失败：' + (err && err.message ? err.message : String(err)) +
-        '。请确认 vendor/three.min.js 存在。');
+      fatal('本地资源或 3D 初始化失败：' + (err?.message || String(err)));
     });
   }
 
@@ -126,22 +128,29 @@
 
     /* ------------------------------------------------------------ renderer */
 
-    // High is the default on capable WebGL2 devices. Profile selection only
-    // controls the presentation and the dimensions of the backbuffer.
-    var qualityRequested = 'high';
-    try {
-      var qm = /[?&]quality=(high|balanced|fallback)\b/i.exec(window.location.search || '');
-      if (qm) qualityRequested = qm[1].toLowerCase();
-    } catch (errQuality) {
-      qualityRequested = 'high';
-    }
+    var params = new URLSearchParams(window.location.search);
+    var settings = PBSettings.load();
+    var events = PBEvents.create();
+    // Every generated mesh, material, texture and audio system is local, but it
+    // still needs an accountable owner.  The registry makes those resources
+    // inspectable without changing the renderer's allocation strategy.
+    var assets = window.PBAssets ? PBAssets.create() : null;
+    var toolsMode = PBBenchmark.options(params);
+    var seed = toolsMode.seed;
+    var gameplayRandom = seed === null ? Math.random : PBEvents.rng(seed);
+    var visualRandom = seed === null ? Math.random : PBEvents.rng(seed ^ 0xa53d19);
+    var qualityOverride = (params.get('quality') || '').toLowerCase();
+    var hasQualityOverride = Object.prototype.hasOwnProperty.call(PBQuality.profiles, qualityOverride);
+    var qualityRequested = hasQualityOverride ? qualityOverride : settings.quality;
 
     var renderer;
     try {
       renderer = new THREE.WebGLRenderer({
         canvas: canvas,
-        antialias: false,
-        quality: qualityRequested
+        antialias: true,
+        quality: qualityRequested,
+        shadowQuality: settings.shadows,
+        reflectionMode: settings.reflections
       });
     } catch (err) {
       console.error('[PIXEL//BREACH] renderer', err);
@@ -149,90 +158,40 @@
       return;
     }
 
-    var QUALITY_PROFILES = {
-      high: {
-        name: 'high', width: 1920, height: 1080,
-        maxLocalLights: 8, visualDetail: 1.0, textureMix: 1.0,
-        extraDetail: true, contactShadows: 12
-      },
-      balanced: {
-        name: 'balanced', width: 960, height: 540,
-        maxLocalLights: 5, visualDetail: 0.85, textureMix: 0.85,
-        extraDetail: true, contactShadows: 12
-      },
-      fallback: {
-        name: 'fallback', width: 640, height: 360,
-        maxLocalLights: 4, visualDetail: 0.5, textureMix: 0.55,
-        extraDetail: false, contactShadows: 6
-      }
-    };
-
-    function profileFitsBackend(def) {
-      if (!renderer.isWebGL2) return false;
-      var caps = renderer.capabilities || {};
-      return (renderer.maxRenderWidth || 0) >= def.width &&
-        (renderer.maxRenderHeight || 0) >= def.height &&
-        (caps.maxTextureSize || 0) >= (def.name === 'high' ? 2048 : 256) &&
-        (caps.maxFragmentUniformVectors || 0) >= 48;
+    var qualitySelection;
+    try {
+      qualitySelection = PBQuality.configure(renderer, qualityRequested);
+    } catch (error) {
+      fatal('渲染目标不可用：' + error.message);
+      return;
     }
-
-    function chooseQualityProfile(requested) {
-      var high = QUALITY_PROFILES.high;
-      var balanced = QUALITY_PROFILES.balanced;
-      var fallback = QUALITY_PROFILES.fallback;
-      if (!renderer.isWebGL2) {
-        return {
-          profile: fallback,
-          reason: 'WebGL1 context: Fallback profile enforced at 640x360.'
-        };
-      }
-      if (requested === 'fallback') {
-        return {
-          profile: fallback,
-          reason: 'Fallback requested explicitly at 640x360.'
-        };
-      }
-      if (requested === 'high') {
-        if (profileFitsBackend(high)) {
-          return {
-            profile: high,
-            reason: 'WebGL2 and backend limits support 1920x1080.'
-          };
-        }
-        if (profileFitsBackend(balanced)) {
-          return {
-            profile: balanced,
-            reason: 'High target limits were not met; running Balanced at 960x540.'
-          };
-        }
-        return {
-          profile: fallback,
-          reason: 'High requested, but even 960x540 was unsafe; degraded to 640x360.'
-        };
-      }
-      if (profileFitsBackend(balanced)) {
-        return { profile: balanced, reason: 'Balanced requested at 960x540.' };
-      }
-      return {
-        profile: fallback,
-        reason: 'Balanced requested, but 960x540 was unsafe; degraded to 640x360.'
-      };
-    }
-
-    var qualitySelection = chooseQualityProfile(qualityRequested);
     var selectedProfile = qualitySelection.profile;
-    renderer.setQuality(selectedProfile.name);
-    renderer.setPixelRatio(1);
-    renderer.setSize(selectedProfile.width, selectedProfile.height);
-    if (selectedProfile.name === 'high' && !renderer.profile.highVisuals) {
-      qualitySelection = chooseQualityProfile('balanced');
-      qualitySelection.reason = 'High initialization failed: ' + renderer.highError;
-      selectedProfile = qualitySelection.profile;
-      renderer.setQuality(selectedProfile.name);
-      renderer.setSize(selectedProfile.width, selectedProfile.height);
+    var qualityHud = byId('qualityHud');
+    var qualityNames = { high: '高', balanced: '均衡', fallback: '兼容' };
+    qualityHud.dataset.profile = renderer.quality;
+    qualityHud.hidden = false;
+    function updateQualityHud() {
+      qualityHud.textContent = '画质 · ' + qualityNames[renderer.quality] + ' · ' + RES_H + 'p';
+      qualityHud.title = renderer.quality === qualityRequested
+        ? '当前渲染分辨率 ' + RES_W + '×' + RES_H
+        : '已自动降档。' + qualitySelection.reason;
     }
-    RES_W = selectedProfile.width;
-    RES_H = selectedProfile.height;
+    var exposureOverride = params.has('exposure') ? Number(params.get('exposure')) : NaN;
+    RES_W = qualitySelection.size.width;
+    RES_H = qualitySelection.size.height;
+    updateQualityHud();
+
+    var dynamicResolution = PBResolution.create(selectedProfile.scaleMin, 1, settings.dynamic && !toolsMode.fixed,
+      function (scale) {
+        var size = PBQuality.resolution(renderer, selectedProfile, scale);
+        if (!renderer.setSize(size.width, size.height)) return false;
+        RES_W = size.width;
+        RES_H = size.height;
+        updateQualityHud();
+        return true;
+      });
+    dynamicResolution.configure(settings.dynamic && !toolsMode.fixed, toolsMode.scale ?? settings.scale);
+
     var highVisuals = renderer.profile.highVisuals;
     try {
       if (document.body) document.body.classList.add('render-' + selectedProfile.name);
@@ -245,6 +204,10 @@
       backend: renderer.backend,
       width: RES_W,
       height: RES_H,
+      baseWidth: selectedProfile.width,
+      baseHeight: selectedProfile.height,
+      renderScaleMin: selectedProfile.scaleMin,
+      renderScaleMax: selectedProfile.scaleMax,
       reason: qualitySelection.reason,
       degraded: selectedProfile.name !== qualityRequested,
       shaderVariant: renderer.profile.shaderVariant || 'full',
@@ -259,40 +222,41 @@
     scene.background = new THREE.Color(0x1b1228);
     scene.fog = new THREE.Fog(0x744353, 22, 92);
 
-    var camera = new THREE.PerspectiveCamera(74, RES_W / RES_H, 0.06, 160);
+    var camera = new THREE.PerspectiveCamera(settings.fov, RES_W / RES_H, 0.06, 160);
     scene.add(camera);
 
-    var duskFill = highVisuals ? 0x617da9 : 0x3f4f92;
-    var ambientLight = new THREE.AmbientLight(duskFill, highVisuals ? 1.13 : 1.08);
+    // Natural dusk fill: cool enough to separate shadowed steel, but not the
+    // saturated blue/purple wash that made the previous pass look synthetic.
+    var duskFill = highVisuals ? 0x52606b : 0x46545f;
+    var ambientLight = new THREE.AmbientLight(duskFill, highVisuals ? 0.88 : 0.94);
     scene.add(ambientLight);
     var ambientTint = {
       target: new THREE.Color(duskFill),
       baseHex: duskFill
     };
-    var sun = new THREE.DirectionalLight(highVisuals ? 0xffa96b : 0xffa85c, highVisuals ? 2.85 : 1.46);
-    if (highVisuals) sun.position.set(-0.50, 0.245, -0.86);
-    else sun.position.set(-0.72, 0.38, 0.52);
+    var sun = new THREE.DirectionalLight(highVisuals ? 0xe1a16f : 0xd39468, highVisuals ? 2.35 : 1.30);
+    sun.position.set(-0.50, 0.245, -0.86);
     scene.add(sun);
 
     /* ------------------------------------------------------------- palette */
 
     var C = {
-      cyan: 0x57f2ff,
-      cyanDim: 0x1b6177,
-      magenta: 0xff4fb8,
-      violet: 0x9b6bff,
-      amber: 0xffc861,
-      red: 0xff4d6d,
-      green: 0x6bffb0,
-      sunset: 0xff9a4a,
-      horizon: 0xff6a52,
-      dusk: 0x6d4a92,
-      water: 0x1a2b46,
-      floor: 0x2b2a2b,
-      wall: 0x31343a,
-      wallDark: 0x22252b,
-      steel: 0x4b5560,
-      gun: 0x8ea6bd
+      cyan: 0x79c8cf,
+      cyanDim: 0x315b63,
+      magenta: 0xb75a7e,
+      violet: 0x766b9b,
+      amber: 0xd2a15d,
+      red: 0xc9575e,
+      green: 0x79b99a,
+      sunset: 0xd98450,
+      horizon: 0xb96c5e,
+      dusk: 0x5d596d,
+      water: 0x203444,
+      floor: 0x343536,
+      wall: 0x3c4143,
+      wallDark: 0x272d30,
+      steel: 0x59636a,
+      gun: 0x8b9ca4
     };
 
     // Shared 4x2 surface-atlas slots.  Every material points at one of these;
@@ -317,7 +281,10 @@
     function matLambert(hex, opts) {
       var o = opts ? Object.assign({}, opts) : {};
       o.color = hex;
-      return new THREE.MeshLambertMaterial(o);
+      // V7 uses the renderer's metallic-roughness material class.  The High
+      // path shades it with a GGX/Smith/Schlick BRDF inside linear space;
+      // WebGL1 keeps the compatible forward path.
+      return new THREE.MeshStandardMaterial(o);
     }
 
     var MAT = {
@@ -338,6 +305,10 @@
       portalOpen: matBasic(C.cyan, { transparent: true, opacity: 0.7, blending: 'additive', depthWrite: false })
     };
 
+    var MODELS = PBModelKit.create(THREE);
+    if (assets) {
+      assets.register('models', 'dockyard-kit', MODELS, { type: 'procedural-models', local: true });
+    }
     var G = {
       box: new THREE.BoxGeometry(1, 1, 1),
       plane: new THREE.PlaneGeometry(1, 1),
@@ -347,12 +318,11 @@
       cone: new THREE.ConeGeometry(1, 1, 6),
       torus: new THREE.TorusGeometry(1, 0.055, 5, 22),
       ring: new THREE.TorusGeometry(1, 0.03, 4, 26),
-      slashArc: new THREE.TorusGeometry(1, 0.06, 4, 18, Math.PI * 1.18),
       circle: new THREE.CircleGeometry(1, 24)
     };
 
     /* ================================================================== *
-     * Industrial pixel-art kit
+     * Industrial dockyard kit (V7 realistic proportions)
      *
      * The local renderer is the project's Three.js-compatible subset.  Surface
      * patterns are generated into tiny local Canvas2D atlases.  Sparse patterns
@@ -400,34 +370,38 @@
       black: matLambert(0x101518, { specular: 0.12, roughness: 0.58 }),
       cable: matLambert(0x171c20, { specular: 0.18, roughness: 0.55 }),
       oil: matLambert(0x1e2321, { specular: 0.3, roughness: 0.28 }),
-      hazard: matBasic(0xd1a82f),
-      hazardDark: matBasic(0x1c1d18),
-      white: matBasic(0xdfe3dc),
-      redPaint: matBasic(0xb84537),
-      greenPaint: matBasic(0x5aa86a),
-      screen: matBasic(0x6de6d8),
-      lampCool: matBasic(0xb8f7ff),
-      lampWarm: matBasic(0xffd59a),
-      lampRed: matBasic(0xff675c),
-      fxLine: matBasic(0x58ddff),
-      fxPylon: matBasic(0x3ec8dd),
-      fxAlarm: matBasic(0xff584f),
+      // Safety paint is weathered ochre rather than UI-yellow; energy colours
+      // remain reserved for gameplay-critical devices and combat feedback.
+      hazard: matBasic(0xb38d3c),
+      hazardDark: matBasic(0x262722),
+      white: matBasic(0xc8c7bd),
+      redPaint: matBasic(0x87453e),
+      greenPaint: matBasic(0x4d6956),
+      screen: matBasic(0x4d9690),
+      lampCool: matBasic(0xb6c9c5),
+      lampWarm: matBasic(0xe0bd86),
+      lampRed: matBasic(0xb95f54),
+      fxLine: matBasic(0x5aa6ad),
+      fxPylon: matBasic(0x4b9ca1),
+      fxAlarm: matBasic(0xc25a4f),
 
       // Outdoor dockyard palette.  Container paint is deliberately muted so
       // the low sun and blue dusk fill still carry the colour, while the
       // silhouettes stay readable at every internal resolution.
-      asphalt: matLambert(0x34343a, { specular: 0.22, roughness: 0.72, specularColor: 0xffc48a }),
-      asphaltWarm: matLambert(0x403a3b, { specular: 0.26, roughness: 0.66, specularColor: 0xffb878 }),
-      quay: matLambert(0x5d5953, { specular: 0.1, roughness: 0.88, specularColor: 0xffd8a8 }),
-      containerRed: matLambert(0x9c4038, { specular: 0.28, roughness: 0.56, specularColor: 0xffd2aa }),
-      containerBlue: matLambert(0x2f5a75, { specular: 0.3, roughness: 0.54, specularColor: 0xffd2aa }),
-      containerGreen: matLambert(0x39604b, { specular: 0.26, roughness: 0.58, specularColor: 0xffd2aa }),
-      containerOrange: matLambert(0xa55f2e, { specular: 0.3, roughness: 0.52, specularColor: 0xffd2aa }),
-      containerPurple: matLambert(0x5b4670, { specular: 0.26, roughness: 0.58, specularColor: 0xffd2aa }),
-      containerTeal: matLambert(0x306260, { specular: 0.3, roughness: 0.54, specularColor: 0xffd2aa }),
-      water: matLambert(0x1a2b46, { specular: 0.82, roughness: 0.18, specularColor: 0xffc890 }),
-      waterGlint: matBasic(0xffb066, {
-        transparent: true, opacity: 0.14, blending: 'additive', depthWrite: false, fog: false
+      // Desaturated mineral colours let the sunset and work lamps provide the
+      // contrast; props no longer read as individually emissive toy blocks.
+      asphalt: matLambert(0x292c30, { specular: 0.14, roughness: 0.82, specularColor: 0xc5b39a }),
+      asphaltWarm: matLambert(0x363331, { specular: 0.16, roughness: 0.78, specularColor: 0xc0a68b }),
+      quay: matLambert(0x55544f, { specular: 0.07, roughness: 0.92, specularColor: 0xc8c0ae }),
+      containerRed: matLambert(0x713c38, { specular: 0.18, roughness: 0.68, specularColor: 0xbcae9d }),
+      containerBlue: matLambert(0x294b5b, { specular: 0.19, roughness: 0.67, specularColor: 0xbcae9d }),
+      containerGreen: matLambert(0x354f42, { specular: 0.16, roughness: 0.71, specularColor: 0xbcae9d }),
+      containerOrange: matLambert(0x785031, { specular: 0.19, roughness: 0.66, specularColor: 0xbcae9d }),
+      containerPurple: matLambert(0x51495a, { specular: 0.16, roughness: 0.71, specularColor: 0xbcae9d }),
+      containerTeal: matLambert(0x315455, { specular: 0.18, roughness: 0.68, specularColor: 0xbcae9d }),
+      water: matLambert(0x142c3b, { specular: 0.66, roughness: 0.26, specularColor: 0xb9ae9b }),
+      waterGlint: matBasic(0xd5a071, {
+        transparent: true, opacity: 0.075, blending: 'additive', depthWrite: false, fog: false
       }),
       fenceDark: matLambert(0x2b2f33, { specular: 0.34, roughness: 0.5 }),
 
@@ -441,23 +415,23 @@
       aoSoft: matBasic(0x000000, {
         transparent: true, opacity: 0.07, depthWrite: false, fog: false
       }),
-      glowWarm: matBasic(0xff9a4a, {
-        transparent: true, opacity: 0.05, blending: 'additive', depthWrite: false, fog: false
+      glowWarm: matBasic(0xd08b55, {
+        transparent: true, opacity: 0.026, blending: 'additive', depthWrite: false, fog: false
       }),
-      glowWarmCore: matBasic(0xffd18a, {
-        transparent: true, opacity: 0.09, blending: 'additive', depthWrite: false, fog: false
+      glowWarmCore: matBasic(0xe0b783, {
+        transparent: true, opacity: 0.052, blending: 'additive', depthWrite: false, fog: false
       }),
-      glowRust: matBasic(0xff6a3d, {
+      glowRust: matBasic(0xb45d42, {
+        transparent: true, opacity: 0.024, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowRustCore: matBasic(0xc28b6f, {
+        transparent: true, opacity: 0.046, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowCool: matBasic(0x4e8f98, {
+        transparent: true, opacity: 0.022, blending: 'additive', depthWrite: false, fog: false
+      }),
+      glowCoolCore: matBasic(0x8bb7b4, {
         transparent: true, opacity: 0.045, blending: 'additive', depthWrite: false, fog: false
-      }),
-      glowRustCore: matBasic(0xffb27a, {
-        transparent: true, opacity: 0.08, blending: 'additive', depthWrite: false, fog: false
-      }),
-      glowCool: matBasic(0x4fdcff, {
-        transparent: true, opacity: 0.05, blending: 'additive', depthWrite: false, fog: false
-      }),
-      glowCoolCore: matBasic(0xaef7ff, {
-        transparent: true, opacity: 0.09, blending: 'additive', depthWrite: false, fog: false
       }),
 
       // Pseudo-reflections: long, directional additive slivers baked on the
@@ -466,29 +440,29 @@
       reflectWarm: matBasic(0xffa95c, {
         transparent: true, opacity: 0.075, blending: 'additive', depthWrite: false, fog: false
       }),
-      reflectCool: matBasic(0x63e8ff, {
-        transparent: true, opacity: 0.07, blending: 'additive', depthWrite: false, fog: false
+      reflectCool: matBasic(0x79b9bb, {
+        transparent: true, opacity: 0.032, blending: 'additive', depthWrite: false, fog: false
       }),
       reflectRust: matBasic(0xff6a3d, {
         transparent: true, opacity: 0.07, blending: 'additive', depthWrite: false, fog: false
       }),
-      reflectBoss: matBasic(0xff4fb8, {
-        transparent: true, opacity: 0.085, blending: 'additive', depthWrite: false, fog: false
+      reflectBoss: matBasic(0xb75a7e, {
+        transparent: true, opacity: 0.04, blending: 'additive', depthWrite: false, fog: false
       }),
       reflectExit: matBasic(0xff4d6d, {
         transparent: true, opacity: 0.07, blending: 'additive', depthWrite: false, fog: false
       })
     };
 
-    // V5.1 PBR-lite tuning.  Every value is a shared material property, set once
-    // before the scene is built.  The renderer turns these into an AO term, a
-    // metal diffuse/specular trade and a world-space pixel grain; this is a
-    // readable approximation, not a physically based BRDF.
+    // V7 surface tuning.  Every value is a shared material property, set once
+    // before the scene is built.  AO attenuates indirect fill, metalness drives
+    // the F0/Fresnel response and `detail` is now a very faint micro-variation
+    // instead of a visible pixel grain.
     function tuneSurface(mat, ao, metalness, detail) {
       if (!mat) return;
       mat.ao = ao;
       mat.metalness = metalness;
-      mat.detail = detail;
+      mat.detail = detail * 0.3;
     }
 
     // Tags a shared material with an atlas slot + surface tiling.  The
@@ -497,7 +471,10 @@
     function tuneTexture(mat, tile, scale, mix) {
       if (!mat) return;
       mat.textureTile = tile;
-      mat.textureScale = scale;
+      // Slightly finer world-space tiling reads as material detail at 1080p
+      // instead of chunky texels; mipmapping and anisotropic filtering keep it
+      // stable with distance.
+      mat.textureScale = scale * 1.3;
       mat.textureMix = Math.max(0, Math.min(1,
         mix * (QUALITY.textureMix === undefined ? 1 : QUALITY.textureMix)));
     }
@@ -572,34 +549,34 @@
     tuneTexture(MAT.ceiling, DETAIL_TILE.metal, 0.55, 0.35);
     tuneTexture(MAT.cover, DETAIL_TILE.metal, 0.45, 0.6);
 
-    if (highVisuals) {
-      IM.cranePaint = matLambert(0xc58a30, { roughness: 0.47, specular: 0.45, metalness: 0.32, ao: 0.94 });
-      IM.craneIvory = matLambert(0xc9c7ac, { roughness: 0.49, specular: 0.39, metalness: 0.16 });
-      IM.casting = matLambert(0xa3a8a1, { roughness: 0.31, specular: 0.57, metalness: 0.62 });
-      IM.cabGlass = matLambert(0x24546b, { roughness: 0.13, specular: 0.96, metalness: 0.46, surfaceType: 1 });
-      IM.wet = matLambert(0x222237, { roughness: 0.12, specular: 0.77, ao: 0.88, bump: 0.45, surfaceType: 1 });
-      IM.track = matLambert(0x272832, { roughness: 0.91, specular: 0.05, ao: 0.91 });
-      IM.stencil = matLambert(0xd5cbb2, { roughness: 0.83, specular: 0.1, bump: 0.4 });
-      IM.railPaint = matLambert(0xc89844, { roughness: 0.70, specular: 0.23, bump: 0.55 });
+    {
+      IM.cranePaint = matLambert(0x856b3b, { roughness: 0.62, specular: 0.32, metalness: 0.28, ao: 0.94 });
+      IM.craneIvory = matLambert(0x9b9b8c, { roughness: 0.58, specular: 0.30, metalness: 0.12 });
+      IM.casting = matLambert(0x7f8987, { roughness: 0.42, specular: 0.42, metalness: 0.56 });
+      IM.cabGlass = matLambert(0x25424a, { roughness: 0.22, specular: 0.74, metalness: 0.02, surfaceType: 3 });
+      IM.wet = matLambert(0x20292e, { roughness: 0.20, specular: 0.58, ao: 0.88, bump: 0.45, surfaceType: 1 });
+      IM.track = matLambert(0x24282a, { roughness: 0.94, specular: 0.04, ao: 0.91 });
+      IM.stencil = matLambert(0xb5b1a2, { roughness: 0.88, specular: 0.08, bump: 0.4 });
+      IM.railPaint = matLambert(0x9d823f, { roughness: 0.78, specular: 0.17, bump: 0.55 });
       IM.water.surfaceType = 2;
-      IM.lampWarm.radiance = 3.9;
-      IM.lampCool.radiance = 3.6;
-      IM.lampRed.radiance = 3.9;
-      IM.screen.radiance = 1.55;
-      IM.fxLine.radiance = 1.9;
-      IM.fxPylon.radiance = 2.9;
-      IM.fxAlarm.radiance = 2.6;
-      MAT.portalOpen.radiance = 2.6;
-      MAT.portalLocked.radiance = 2.15;
-      IM.containerRed.color.setHex(0xad584e);
-      IM.containerBlue.color.setHex(0x3d7d97);
-      IM.containerGreen.color.setHex(0x527f67);
-      IM.containerOrange.color.setHex(0xbe7d36);
-      IM.containerPurple.color.setHex(0x706384);
-      IM.containerTeal.color.setHex(0x367f7f);
-      IM.asphalt.color.setHex(0x55555c);
-      IM.asphaltWarm.color.setHex(0x635c55);
-      IM.quay.color.setHex(0x7a756e);
+      IM.lampWarm.radiance = 1.8;
+      IM.lampCool.radiance = 1.6;
+      IM.lampRed.radiance = 1.9;
+      IM.screen.radiance = 0.82;
+      IM.fxLine.radiance = 1.15;
+      IM.fxPylon.radiance = 1.45;
+      IM.fxAlarm.radiance = 1.35;
+      MAT.portalOpen.radiance = 1.45;
+      MAT.portalLocked.radiance = 1.2;
+      IM.containerRed.color.setHex(0x7c4945);
+      IM.containerBlue.color.setHex(0x365968);
+      IM.containerGreen.color.setHex(0x466052);
+      IM.containerOrange.color.setHex(0x815d3c);
+      IM.containerPurple.color.setHex(0x62596a);
+      IM.containerTeal.color.setHex(0x3d6463);
+      IM.asphalt.color.setHex(0x4b4d50);
+      IM.asphaltWarm.color.setHex(0x57524c);
+      IM.quay.color.setHex(0x6c6a63);
       IM.black.roughness = 0.94;
       IM.rustLight.roughness = 0.84;
       tuneTexture(IM.cranePaint, DETAIL_TILE.paint, 0.46, 0.94);
@@ -609,6 +586,32 @@
       tuneTexture(IM.stencil, DETAIL_TILE.paint, 0.76, 0.73);
       tuneTexture(IM.railPaint, DETAIL_TILE.paint, 0.55, 0.9);
       tuneTexture(IM.wet, DETAIL_TILE.water, 0.45, 0.81);
+    }
+
+    // V7 material library.  These names group the shared materials by the
+    // physical surface they represent; the renderer resolves each group to a
+    // different metallic/roughness/F0 response, so steel, concrete, timber,
+    // rubber, glass and water are distinguishable under the same sunset light.
+    var MATERIAL_LIBRARY = {
+      wetSteel: [IM.steel2, IM.steel, highVisuals ? IM.wet : IM.asphaltWarm],
+      paintedSteel: [IM.containerRed, IM.containerBlue, IM.containerGreen,
+        IM.containerOrange, IM.containerPurple, IM.containerTeal,
+        highVisuals ? IM.cranePaint : IM.steel],
+      rustedSteel: [IM.rust, IM.rustDark, IM.rustLight],
+      castIron: [IM.steelDark, IM.steelDeep, highVisuals ? IM.casting : IM.steelDark],
+      concrete: [IM.concrete, IM.concrete2, IM.concreteDark, IM.concreteLight],
+      asphalt: [IM.asphalt, IM.asphaltWarm],
+      wood: [IM.rustLight],
+      rubber: [IM.cable, IM.black],
+      glass: [highVisuals ? IM.cabGlass : IM.steel2],
+      water: [IM.water],
+      energyCore: [IM.fxPylon, IM.fxLine],
+      weaponFinish: [],
+      enemyArmor: []
+    };
+    if (assets) {
+      assets.register('materials', 'dockyard-surfaces', MATERIAL_LIBRARY,
+        { type: 'procedural-material-library', quality: QUALITY.name, local: true });
     }
 
     var zoneGlowMats = [
@@ -840,6 +843,10 @@
         { hex: '#ff00ff', key: null, skip: true }
       ], 'sparse', 16)
     };
+    if (assets) {
+      assets.register('textures', 'dockyard-decals', TEX,
+        { type: 'procedural-texture-set', local: true });
+    }
 
     // V5.1 shared surface sampler.  A single 256x128 Canvas2D atlas holds eight
     // 64x64 tiles.  R is micro contrast, G is the metal/rough mask and B is the
@@ -847,6 +854,14 @@
     // so arbitrary procedural boxes get real texel detail without UV attributes.
     // All noise octaves use an exact whole number of cells across a 64 px tile,
     // which keeps the patterns seamless and deterministic.
+    // V7 shared surface sampler.  A single procedural texture array holds eight
+    // 512x512 layers.  R stores the tangent-space normal X, G the normal Y,
+    // B the roughness and A the baked AO/contact mask; the High shader samples
+    // it with explicit gradients in world space, so arbitrary procedural
+    // geometry gets normal, roughness and AO detail without UV attributes.
+    // Every noise octave uses a whole number of cells across the tile, keeping
+    // the layers seamless and deterministic; mipmaps plus anisotropic
+    // filtering prevent the near-field detail from shimmering.
     function periodicNoise(x, y, period, seed) {
       var gx = Math.floor(x);
       var gy = Math.floor(y);
@@ -872,8 +887,9 @@
       return ab + (cd - ab) * fy;
     }
 
-    function makeSurfaceDetailAtlas() {
-      var tile = 64;
+    function makeSurfaceDetailAtlas(width) {
+      var tile = width / 4;
+      var frequency = 64 / tile;
       var cols = 4;
       var rows = 2;
       var canvas = document.createElement('canvas');
@@ -891,9 +907,9 @@
         var oy = Math.floor(idx / cols) * tile;
         for (var y = 0; y < tile; y++) {
           for (var x = 0; x < tile; x++) {
-            var n1 = periodicNoise(x / 8, y / 8, 8, idx + 1);
-            var n2 = periodicNoise(x / 4, y / 4, 16, idx + 11);
-            var n3 = periodicNoise(x / 16, y / 16, 4, idx + 23);
+            var n1 = periodicNoise(x * frequency / 8, y * frequency / 8, 8, idx + 1);
+            var n2 = periodicNoise(x * frequency / 4, y * frequency / 4, 16, idx + 11);
+            var n3 = periodicNoise(x * frequency / 16, y * frequency / 16, 4, idx + 23);
             var r = 128;
             var g = 128;
             var b = 128;
@@ -951,92 +967,15 @@
       return canvas;
     }
 
-    function makeSurfaceLayers() {
-      var size = 256;
-      var count = 8;
-      var albedo = new Uint8ClampedArray(size * size * 4 * count);
-      var finish = new Uint8ClampedArray(albedo.length);
-      var height = new Float32Array(size * size);
-      var wrap = size - 1;
-      for (var layer = 0; layer < count; layer++) {
-        for (var y = 0; y < size; y++) {
-          for (var x = 0; x < size; x++) {
-            var broad = periodicNoise(x / 32, y / 32, 8, layer + 2);
-            var chips = periodicNoise(x / 8, y / 8, 32, layer + 19);
-            var grain = hash2(x + layer * 251, y + layer * 797);
-            var grainLine = periodicNoise(x / 2, y / 8, 128, layer + 9);
-            var value, warmth, relief, rough, contact;
-            switch (layer) {
-              case DETAIL_TILE.metal: {
-                var brush = Math.max(0, Math.sin(y * Math.PI / 4 + broad) * 0.4 + grain * 0.6 - 0.43);
-                value = 133 + 30 * broad + brush * 56 - chips * 23;
-                warmth = -5; relief = brush * 0.23 + 0.3 * chips; rough = 97 + 76 * chips + brush * 58; contact = 218 + 34 * broad;
-                break;
-              }
-              case DETAIL_TILE.rust:
-                value = 72 + broad * 66 + chips * 51 + grain * 25;
-                warmth = 42 * (0.2 + chips); relief = 0.48 * chips + 0.18 * grain; rough = 158 + 80 * chips; contact = 155 + 79 * broad;
-                break;
-              case DETAIL_TILE.concrete: {
-                var pore = grain > 0.91 ? (grain - 0.91) * 8 : 0;
-                value = 105 + broad * 65 + chips * 32 + grain * 25 - pore * 71;
-                warmth = 3 + broad * 8; relief = 0.34 * chips + 0.18 * grain - pore * 0.49; rough = 166 + 43 * broad; contact = 208 + 34 * chips - pore * 55;
-                break;
-              }
-              case DETAIL_TILE.wood: {
-                var fiber = Math.sin(2 * Math.PI * y * 21 / size + broad * 5.2 + chips * 0.8);
-                var knot = Math.max(0, fiber - 0.52);
-                value = 127 + broad * 27 + fiber * 32 - knot * grain * 49;
-                warmth = 24; relief = fiber * 0.21 + broad * 0.24; rough = 165 + 44 * chips; contact = 216 + fiber * 19;
-                break;
-              }
-              case DETAIL_TILE.paint: {
-                var peel = Math.max(0, (chips * 0.68 + grainLine * 0.25 + broad * 0.25 - 0.76) * 4.1);
-                value = 143 + broad * 43 + grain * 16 - 114 * peel - grainLine * 22;
-                warmth = 4 + peel * 48; relief = chips * 0.12 - peel * 0.48; rough = 96 + broad * 54 + peel * 80; contact = 246 - peel * 104;
-                break;
-              }
-              case DETAIL_TILE.chips:
-                value = 115 + broad * 34 + chips * 43 + (grain > 0.96 ? 51 : grain * 23);
-                warmth = -4; relief = 0.33 * chips + 0.15 * grain; rough = 110 + 90 * chips; contact = 180 + chips * 66;
-                break;
-              case DETAIL_TILE.water:
-                value = 137 + 35 * broad; warmth = -12; relief = chips * 0.14; rough = 78 + 32 * chips; contact = 250;
-                break;
-              default:
-                value = 87 + broad * 52 + chips * 29 + 28 * grain;
-                warmth = 1; relief = chips * 0.20 + grain * 0.32; rough = 176 + broad * 61; contact = 192 + broad * 52;
-            }
-            var index = (layer * size * size + y * size + x) * 4;
-            albedo[index] = value + warmth * 0.56;
-            albedo[index + 1] = value;
-            albedo[index + 2] = value - warmth;
-            albedo[index + 3] = 255;
-            height[y * size + x] = relief;
-            finish[index + 2] = rough;
-            finish[index + 3] = contact;
-          }
-        }
-        for (var v = 0; v < size; v++) {
-          for (var u = 0; u < size; u++) {
-            var i = (layer * size * size + v * size + u) * 4;
-            // Wrap central differences so normals tile with the color.
-            finish[i] = 128 + (height[v * size + ((u - 1) & wrap)] - height[v * size + ((u + 1) & wrap)]) * 225;
-            finish[i + 1] = 128 + (height[((v - 1) & wrap) * size + u] - height[((v + 1) & wrap) * size + u]) * 225;
-          }
-        }
-      }
-      renderer.setSurfaceLayers(size, count, albedo, finish);
-      return { size: size, count: count, bytes: albedo.byteLength + finish.byteLength };
-    }
-
     // The compatibility shader used by very low WebGL1 uniform budgets has no
     // sampler uniforms, so avoid generating and uploading an unused atlas.
     var surfaceSamplingEnabled = !renderer.profile ||
       renderer.profile.textureSampling !== false;
-    var surfaceLayers = highVisuals ? makeSurfaceLayers() : null;
+    byId('loadingStatus').textContent = '正在生成材质与船坞…';
+    var surfaceSize = settings.textures === 'low' ? 512 : 1024;
+    var surfaceLayers = highVisuals ? PBDockArt.makeSurfaceLayers(renderer, periodicNoise, hash2, DETAIL_TILE, surfaceSize) : null;
     var surfaceAtlasCanvas = surfaceSamplingEnabled && !highVisuals
-      ? makeSurfaceDetailAtlas()
+      ? makeSurfaceDetailAtlas(settings.textures === 'low' ? 512 : 1024)
       : null;
     var surfaceDetailTexture = (surfaceAtlasCanvas && THREE.Texture)
       ? new THREE.Texture(surfaceAtlasCanvas, { flipY: false })
@@ -1055,6 +994,7 @@
     var artVerts = 0;
     var batches = Object.create(null);
     var batchList = [];
+    var batchZone = 0;
     var floorGlows = [];
     var valveWheels = [];
     var valveWheelMat = matLambert(0xb2472e);
@@ -1201,9 +1141,19 @@
       geo.setAttribute('normal', { array: new Float32Array(this.n), itemSize: 3 });
       geo.setIndex(new Uint16Array(this.idx));
       this.mesh = new THREE.Mesh(geo, this.material);
-      this.mesh.name = 'pixel-batch-' + this.key;
+      this.mesh.name = 'dock-batch-' + this.key;
+      var bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      for (var i = 0; i < this.p.length; i += 3) {
+        for (var axis = 0; axis < 3; axis++) {
+          bounds[axis] = Math.min(bounds[axis], this.p[i + axis]);
+          bounds[axis + 3] = Math.max(bounds[axis + 3], this.p[i + axis]);
+        }
+      }
+      this.mesh.worldBounds = bounds;
+      this.mesh.detailDistance = this.detailDistance;
       this.mesh.staticShadow = true;
-      this.mesh.castShadow = highVisuals && this.shadowCaster;
+      this.mesh.castShadow = highVisuals && this.shadowCaster && !this.detailDistance;
+      if (!this.shadowCaster && this.material.transparent) this.mesh.reflectionSkip = true;
       // Keep the baked contact darkening underneath the additive fake lights.
       if (this.key === 'aoSoft') this.mesh.renderOrder = -3;
       else if (this.key === 'ao') this.mesh.renderOrder = -2;
@@ -1241,14 +1191,15 @@
       }
     }
 
-    function getBatch(key) {
+    function getBatch(key, tile, distance) {
       if (!IM[key]) return null;
-      if (!batches[key]) {
-        if (batchList.length >= 48) return null;
-        batches[key] = new PixelBatch(key, IM[key]);
-        batchList.push(batches[key]);
+      var id = batchZone + ':' + key + (tile ? ':' + tile : '');
+      if (!batches[id]) {
+        batches[id] = new PixelBatch(key, IM[key]);
+        batches[id].detailDistance = distance;
+        batchList.push(batches[id]);
       }
-      return batches[key];
+      return batches[id];
     }
 
     function commitArt() {
@@ -1386,74 +1337,11 @@
 
     /* ------------------------------------------------------------- signage */
 
-    var FONT = {
-      ' ': ['000', '000', '000', '000', '000'],
-      'A': ['010', '101', '111', '101', '101'],
-      'B': ['110', '101', '110', '101', '110'],
-      'C': ['011', '100', '100', '100', '011'],
-      'D': ['110', '101', '101', '101', '110'],
-      'E': ['111', '100', '110', '100', '111'],
-      'F': ['111', '100', '110', '100', '100'],
-      'G': ['011', '100', '101', '101', '011'],
-      'H': ['101', '101', '111', '101', '101'],
-      'I': ['111', '010', '010', '010', '111'],
-      'K': ['101', '101', '110', '101', '101'],
-      'L': ['100', '100', '100', '100', '111'],
-      'M': ['101', '111', '111', '101', '101'],
-      'N': ['101', '111', '111', '111', '101'],
-      'O': ['111', '101', '101', '101', '111'],
-      'P': ['110', '101', '110', '100', '100'],
-      'R': ['110', '101', '110', '101', '101'],
-      'S': ['011', '100', '010', '001', '110'],
-      'T': ['111', '010', '010', '010', '010'],
-      'U': ['101', '101', '101', '101', '111'],
-      'V': ['101', '101', '101', '101', '010'],
-      'W': ['101', '101', '111', '111', '101'],
-      'X': ['101', '101', '010', '101', '101'],
-      'Y': ['101', '101', '010', '010', '010'],
-      'Z': ['111', '001', '010', '100', '111'],
-      '0': ['111', '101', '101', '101', '111'],
-      '1': ['010', '110', '010', '010', '111'],
-      '2': ['110', '001', '010', '100', '111'],
-      '3': ['110', '001', '010', '001', '110'],
-      '4': ['101', '101', '111', '001', '001'],
-      '5': ['111', '100', '110', '001', '110'],
-      '6': ['011', '100', '111', '101', '111'],
-      '7': ['111', '001', '010', '010', '010'],
-      '8': ['111', '101', '111', '101', '111'],
-      '9': ['111', '101', '111', '001', '110'],
-      '-': ['000', '000', '111', '000', '000'],
-      '/': ['001', '001', '010', '100', '100'],
-      '+': ['000', '010', '111', '010', '000'],
-      ':': ['000', '010', '000', '010', '000']
-    };
+    var placeSign = PBDockArt.signage(THREE, scene, G.plane, IM);
 
-    function drawPixelText(key, x, y, z, yaw, text, cell, normalOffset) {
-      var b = getBatch(key);
-      if (!b) return;
-      text = String(text || '').toUpperCase();
-      var c = Math.cos(yaw || 0), s = Math.sin(yaw || 0);
-      var total = text.length * 4 - 1;
-      for (var i = 0; i < text.length; i++) {
-        var glyph = FONT[text.charAt(i)] || FONT[' '];
-        for (var row = 0; row < 5; row++) {
-          for (var col = 0; col < 3; col++) {
-            if (glyph[row].charAt(col) !== '1') continue;
-            var lx = -total * cell / 2 + i * 4 * cell + col * cell + cell / 2;
-            var ly = (2 - row) * cell;
-          if (highVisuals) {
-            var half = cell * 0.46;
-            b.quad(panelPoint(x, z, lx - half, y + ly - half, normalOffset, yaw),
-              panelPoint(x, z, lx + half, y + ly - half, normalOffset, yaw),
-              panelPoint(x, z, lx + half, y + ly + half, normalOffset, yaw),
-              panelPoint(x, z, lx - half, y + ly + half, normalOffset, yaw));
-          } else {
-            b.box(x + lx * c + normalOffset * s, y + ly, z - lx * s + normalOffset * c,
-              cell * 0.92, cell * 0.92, 0.014, yaw);
-          }
-          }
-        }
-      }
+    function drawStencil(key, x, y, z, yaw, text, cell, normalOffset) {
+      var position = localXZ(x, z, 0, normalOffset, yaw);
+      placeSign(key, position[0], y, position[1], text, cell * 5, yaw, false);
     }
 
     function addSignPanel(x, y, z, yaw, w, h, text, textKey, opts) {
@@ -1480,31 +1368,11 @@
         }
       }
       var cell = Math.min(h * 0.115, w / (text.length * 4.3));
-      drawPixelText(textKey || 'white', x, y, z, yaw, text, Math.max(0.038, cell), 0.055);
+      drawStencil(textKey || 'white', x, y, z, yaw, text, Math.max(0.038, cell), 0.055);
     }
 
     function drawFloorText(key, x, z, text, cell) {
-      var b = getBatch(key);
-      if (!b) return;
-      text = String(text || '').toUpperCase();
-      var total = text.length * 4 - 1;
-      for (var i = 0; i < text.length; i++) {
-        var glyph = FONT[text.charAt(i)] || FONT[' '];
-        for (var row = 0; row < 5; row++) {
-          for (var col = 0; col < 3; col++) {
-            if (glyph[row].charAt(col) !== '1') continue;
-          var x0 = x + (-total * cell / 2 + i * 4 * cell + col * cell + cell / 2);
-          var z0 = z + (row - 2) * cell;
-          if (highVisuals) {
-            var half = cell * 0.44, y = 0.046;
-            b.quad([x0 - half, y, z0 + half], [x0 + half, y, z0 + half],
-              [x0 + half, y, z0 - half], [x0 - half, y, z0 - half]);
-          } else {
-            b.box(x0, 0.034, z0, cell * 0.88, 0.012, cell * 0.88, 0);
-          }
-          }
-        }
-      }
+      placeSign(key, x, 0.046, z, text, cell * 5, 0, true);
     }
 
     /* ---------------------------------------------------------- surface paint */
@@ -1727,7 +1595,9 @@
       var frame = getBatch('steelDark');
       var wear = getBatch('casting');
       var recess = getBatch('steelDeep');
-      var oxide = getBatch('rustDark');
+      var tile = Math.floor(x / 8) + ',' + Math.floor(z / 8);
+      var oxide = getBatch('rustDark', tile, 23);
+      var hardware = getBatch('casting', tile, 37);
       var stencil = getBatch('stencil');
       var amber = getBatch('railPaint');
       var code = opts.code || ('DKY-' + (Math.abs(Math.floor(x * 3 + z * 7)) % 89 + 10));
@@ -1767,7 +1637,8 @@
           var a = -halfW + 0.195 + k * step;
           var stations = [a, a + step * 0.15, a + step * 0.33, a + step * 0.69,
             a + step * 0.87, a + step];
-          var profile = [foot, foot, peak, peak, foot, foot];
+          var dent = hash2(k + x, z + edge) > 0.88 ? 0.031 : 0;
+          var profile = [foot, foot, peak, peak - dent, foot, foot];
           for (var f = 0; f < profile.length - 1; f++) {
             paint.quad(
               panelPoint(x, z, stations[f], yLo, profile[f], faceYaw),
@@ -1782,7 +1653,7 @@
         var idP = localXZ(x, z, -w * 0.21, halfD + 0.005, faceYaw);
         var cell = Math.min(h * 0.065, w / (code.length * 10));
         part(recess, -w * 0.21, baseY + h * 0.65, halfD + 0.005, code.length * cell * 4.2, cell * 6.2, 0.017, faceYaw);
-        drawPixelText('stencil', idP[0], baseY + h * 0.65, idP[1], faceYaw, code, cell, 0.015);
+        drawStencil('stencil', idP[0], baseY + h * 0.65, idP[1], faceYaw, code, cell, 0.015);
         if (opts.topTrim !== false) {
           part(amber, w * 0.29, baseY + h * 0.26, halfD + 0.004, w * 0.15, h * 0.06, 0.016, faceYaw);
           part(stencil, w * 0.29, baseY + h * 0.35, halfD + 0.004, w * 0.09, 0.028, 0.016, faceYaw);
@@ -1795,6 +1666,9 @@
         part(recess, 0, middle, halfW - 0.036, d - 0.13, h - 0.15, 0.07, doorYaw);
         for (var leaf = -1; leaf <= 1; leaf += 2) {
           var hinge = leaf * (halfD - 0.18);
+          var plate = localXZ(x, z, leaf * d * 0.22, halfW + 0.014, doorYaw);
+          drawStencil('stencil', plate[0], baseY + h * 0.73, plate[1], doorYaw,
+            leaf < 0 ? 'MAX GROSS' : 'INSPECTED', Math.min(0.020, d * 0.008), 0.019);
           part(paint, leaf * (d * 0.25 - 0.023), middle, halfW - 0.012, halfD - 0.11, h - rail * 2.10, 0.043, doorYaw);
           for (var seam = 1; seam < 4; seam++) {
             part(frame, leaf * (d * 0.25 - 0.023), yLo + (yHi - yLo) * seam * 0.25,
@@ -1805,7 +1679,7 @@
             var rp = localXZ(x, z, rx, halfW + 0.030, doorYaw);
             wear.pipe(rp[0], yLo + 0.008, rp[1], rp[0], yHi - 0.008, rp[1], 0.024, 7);
             for (var bolt = -1; bolt <= 1; bolt += 2) {
-              part(frame, rx, middle + bolt * (h - rail * 2) * 0.4, halfW + 0.027, 0.107, 0.060, 0.064, doorYaw);
+              part(hardware, rx, middle + bolt * (h - rail * 2) * 0.4, halfW + 0.027, 0.107, 0.060, 0.064, doorYaw);
             }
             part(wear, rx - leaf * 0.067, baseY + h * 0.39, halfW + 0.047, 0.15, 0.024, 0.04, doorYaw);
           }
@@ -1827,7 +1701,8 @@
       var c = Math.cos(yaw || 0), s = Math.sin(yaw || 0);
       addCollider(x, z,
         Math.abs(w * c) + Math.abs(d * s),
-        Math.abs(w * s) + Math.abs(d * c), baseY, baseY + h, 'steel');
+        Math.abs(w * s) + Math.abs(d * c), baseY, baseY + h,
+        key === 'containerOrange' || key === 'containerRed' ? 'rust' : 'paintedSteel');
       if (opts.standable) {
         addStandable(x, z,
           Math.abs(w * c) + Math.abs(d * s),
@@ -1875,7 +1750,7 @@
       }
       if (trim) {
         p = localXZ(x, z, 0, d / 2 + 0.035, yaw);
-        drawPixelText('white', p[0], baseY + h * 0.62, p[1] + 0.01, yaw,
+        drawStencil('white', p[0], baseY + h * 0.62, p[1] + 0.01, yaw,
           opts.code || ('DKY-' + (Math.abs(Math.floor(x * 3 + z * 7)) % 89 + 10)),
           Math.min(0.085, h * 0.05), 0.04);
       }
@@ -2054,6 +1929,8 @@
           addContactAO(xLeg, zLeg, 1.7, 1.7, 0);
           paint.box(xLeg, lower / 2, zLeg, 0.59, lower, 0.61, 0);
           steel.box(xLeg, 0.27, zLeg, 1.24, 0.54, 1.09, 0);
+          addRustStreak(xLeg + 0.17, 1.25, zLeg + 0.317, 0, 0.10, 0.64);
+          getBatch('oil').patch(xLeg + 0.38, 0.034, zLeg - 0.33, 0.48, 0.33, 0.47, 11);
           cast.box(xLeg, 0.56, zLeg, 0.78, 0.11, 0.78, 0);
           for (var band = 0; band < 3; band++) {
             steel.box(xLeg, 0.97 + band * 0.37, zLeg, 0.61, 0.12, 0.63, 0);
@@ -2078,6 +1955,8 @@
           if (cell % 2 === 0) {
             paint.box(a, (lower + upper) * 0.5, zEnd, 0.15, upper - lower, 0.18, 0);
             steel.box(a, lower + 0.13, zEnd, 0.43, 0.20, 0.40, 0);
+            cast.box(a - 0.12, lower + 0.13, zEnd + 0.215, 0.06, 0.075, 0.035, 0);
+            cast.box(a + 0.12, lower + 0.13, zEnd + 0.215, 0.06, 0.075, 0.035, 0);
             beamXZ('steelDark', a, z - lz, a, z + lz, lower, 0.23, 0.23);
           }
         }
@@ -2100,6 +1979,10 @@
       steel.box(trolleyX, 8.04, z, 2.28, 0.72, 2.65, 0);
       for (var cord = -1; cord <= 1; cord += 2) {
         var cx = trolleyX + cord * 1.20;
+        for (var end of [-1, 1]) {
+          frame.pipe(cx - 0.09, 8.09, z + end * 0.82, cx + 0.09, 8.09, z + end * 0.82, 0.22, 12);
+          cast.pipe(cx - 0.12, 8.09, z + end * 0.82, cx + 0.12, 8.09, z + end * 0.82, 0.097, 10);
+        }
         frame.pipe(cx, 8.03, z - 0.82, cx, 4.25, z - 1.0, 0.027, 5);
         frame.pipe(cx, 8.03, z + 0.82, cx, 4.25, z + 1.0, 0.027, 5);
         paint.box(cx, 4.13, z, 0.30, 0.27, 2.57, 0);
@@ -2199,6 +2082,7 @@
           var tieZ = 17.1 - tie * 1.63;
           dark.box(laneX, 0.037, tieZ, 0.55, 0.019, 0.24, 0);
           strip.box(laneX - side * 0.137, 0.053, tieZ, 0.055, 0.016, 0.058, 0);
+          strip.box(laneX + side * 0.126, 0.051, tieZ, 0.048, 0.014, 0.05, 0);
           if (tie % 3 === 1) {
             paint.box(side * 3.9, 0.041, tieZ, 0.090, 0.012, 1.25, 0);
           }
@@ -2235,6 +2119,31 @@
       }
       drawFloorText('stencil', -3.0, 8.33, '07', 0.25);
       drawFloorText('stencil', 2.36, -9.25, 'LOAD 04', 0.18);
+    }
+
+    function buildCargoShip(x, z, size, yaw) {
+      var ship = new THREE.Group();
+      ship.position.set(x, -0.18, z);
+      ship.rotation.y = yaw;
+      ship.scale.setScalar(size);
+      modelPart(ship, MODELS.ship, IM.harborBlack, 0, 1.04, 0, 8.8, 4.1, 34);
+      modelPart(ship, MODELS.ship, IM.harborNear, 0, 2.91, 0, 8.4, 0.56, 33);
+      modelPart(ship, MODELS.ship, IM.harborFar, 0, 3.25, -8.7, 6.9, 0.55, 11.8);
+      modelPart(ship, MODELS.turret, IM.harborFar, 0, 5.28, -11, 6.9, 4.0, 5.2);
+      modelPart(ship, G.box, IM.harborBlack, 0, 6.15, -8.65, 4.5, 0.61, 0.26);
+      modelPart(ship, MODELS.tube, IM.harborBlack, 0, 7.7, -12.4, 0.74, 2.9, 0.74);
+      modelPart(ship, MODELS.tube, IM.harborNear, 0, 9.2, -12.4, 0.83, 0.22, 0.83);
+      for (var deck = 0; deck < 4; deck++) {
+        for (var side of [-1, 1]) {
+          modelPart(ship, MODELS.rifle, (deck + Math.sign(side)) % 2 ? IM.harborNear : IM.harborFar,
+            side * 1.71, 3.8 + (deck % 2) * 1.12, -5 + deck * 3.35, 2.95, 1.43, 3.9);
+        }
+      }
+      for (var mast of [-7.5, 10.2]) {
+        modelPart(ship, MODELS.tube, IM.harborBlack, 0, 5.34, mast, 0.11, 5.05, 0.11);
+        modelPart(ship, G.box, IM.harborNear, 0, 7.45, mast, 2.85, 0.078, 0.22);
+      }
+      PBModelKit.bake(THREE, ship, scene);
     }
 
     function buildHighHarbor() {
@@ -2276,6 +2185,16 @@
         }
       }
 
+      var tankFarm = new THREE.Group();
+      for (var tank = 0; tank < 5; tank++) {
+        var tx = -17 + tank * 7.35, tz = -83 - (tank % 2) * 6.8;
+        modelPart(tankFarm, MODELS.tube, IM.harborFar, tx, 2.67, tz, 2.9, 6.1, 2.9);
+        modelPart(tankFarm, MODELS.lens, IM.harborNear, tx, 5.63, tz, 2.9, 0.92, 2.9);
+        modelPart(tankFarm, MODELS.tube, IM.harborBlack, tx + 1.14, 7.12, tz, 0.21, 2.6, 0.21);
+      }
+      PBModelKit.bake(THREE, tankFarm, scene);
+      buildCargoShip(-44, -63, 0.54, 1.52);
+      buildCargoShip(43, -79, 0.79, 1.38);
       var water = new THREE.Mesh(G.plane, IM.water);
       water.position.set(0, -0.63, -46);
       water.rotation.x = -Math.PI / 2;
@@ -2369,9 +2288,19 @@
       var dark = getBatch('steelDeep');
       var trim = getBatch('steel2');
       var hazard = getBatch('hazard');
+      var rubber = getBatch('cable');
       if (!body || !dark) return;
       addContactAO(x, z, 3.1, 2.0, yaw);
-      body.box(x, 0.55, z, 1.7, 0.8, 1.05, yaw);
+      if (highVisuals) {
+        var chassis = modelPart(scene, MODELS.scatter, body.material, x, 0.57, z, 1.69, 0.81, 1.08, yaw);
+        chassis.castShadow = true;
+        chassis.staticShadow = true;
+        var counterweight = localXZ(x, z, 0, -0.33, yaw);
+        modelPart(scene, MODELS.turret, IM.steelDark, counterweight[0], 0.44, counterweight[1],
+          1.33, 0.53, 0.54, yaw);
+      } else {
+        body.box(x, 0.55, z, 1.7, 0.8, 1.05, yaw);
+      }
       body.box(x, 1.15, z + 0.05, 0.9, 0.42, 0.9, yaw);
       dark.box(x, 0.18, z, 1.8, 0.22, 1.1, yaw);
       var p = localXZ(x, z, 0.35, 0.05, yaw);
@@ -2382,6 +2311,22 @@
         for (var w = -1; w <= 1; w += 2) {
           var wp = localXZ(x, z, w * 0.7, 0.72, yaw);
           trim.box(wp[0], 0.35, wp[1], 0.28, 0.52, 0.28, yaw);
+        }
+      }
+      if (rubber && trim) {
+        for (var axle of [-0.58, 0.58]) {
+          for (var side of [-1, 1]) {
+            var inner = localXZ(x, z, axle, side * 0.43, yaw);
+            var outer = localXZ(x, z, axle, side * 0.62, yaw);
+            rubber.pipe(inner[0], 0.27, inner[1], outer[0], 0.27, outer[1], 0.26, 12);
+            var hub = localXZ(x, z, axle, side * 0.64, yaw);
+            trim.pipe(inner[0], 0.27, inner[1], hub[0], 0.27, hub[1], 0.16, 12);
+            dark.box(hub[0], 0.27, hub[1], 0.18, 0.18, 0.035, yaw);
+          }
+        }
+        for (var fork of [-1, 1]) {
+          var tine = localXZ(x, z, fork * 0.32, 0.91, yaw);
+          dark.box(tine[0], 0.11, tine[1], 0.12, 0.08, 0.72, yaw);
         }
       }
       if (hazard) hazard.box(x, 0.48, z - 0.54, 1.2, 0.14, 0.03, yaw);
@@ -2400,7 +2345,8 @@
         v5Box('rust', rp[0], 0.55, rp[1], 0.22, 0.3, 0.014, yaw);
         addSunShadow(x, z, 1.4, 1.7, 0, yaw);
       }
-      addCollider(x, z, 1.9, 1.2, 0, 1.65);
+      var forkliftHull = addCollider(x, z, 1.9, 1.2, 0, 1.65, 'paintedSteel');
+      forkliftHull.tireBand = true;
     }
 
     function addBollard(x, z, scale) {
@@ -2643,6 +2589,10 @@
       var slat = getBatch('steel2');
       var edge = getBatch('steelDark');
       if (!back || !slat || !edge) return;
+      var stain = getBatch('oil');
+      if (highVisuals && stain) {
+        stain.patch(x - w * 0.18, 0.031, z - d * 0.18, w * 0.61, d * 0.66, 0.24, 13);
+      }
       back.box(x, 0.02, z, w, 0.035, d, 0);
       edge.box(x, 0.035, z + d / 2, w + 0.08, 0.06, 0.08, 0);
       edge.box(x, 0.035, z - d / 2, w + 0.08, 0.06, 0.08, 0);
@@ -2760,6 +2710,15 @@
 
     /* ------------------------------------------------------- boss mood system */
 
+    var ARENA_WEATHER = [
+      [0.09, 0.12, 0.16, 0.32], [0.16, 0.07, 0.22, 0.48], [0.30, 0.12, 0.30, 0.69],
+      [0.90, 0.061, 0.048, 1], [0.065, 0.40, 0.28, 0.55]
+    ];
+
+    var dockFog = new THREE.Color(0x6b3c4e);
+    var targetFog = dockFog.clone();
+    var phaseFog = dockFog.clone();
+
     function setArenaPhase(phase) {
       if (!arenaMood) return;
       arenaMood.phase = phase;
@@ -2825,12 +2784,9 @@
       arenaMood.fenceMat.opacity = fenceOpacity;
       arenaMood.barrierGroup.visible = barrier;
       arenaMood.narrowGroup.visible = narrow;
-      if (scene.fog) {
-        scene.fog.color.setHex(fog);
-        scene.fog.near = near;
-        scene.fog.far = far;
-      }
-      if (scene.background) scene.background.setHex(fog);
+      phaseFog.setHex(fog);
+      var weather = ARENA_WEATHER[phase];
+      renderer.setWeather(weather[0], weather[1], weather[2], weather[3]);
       arenaMood.near = near;
       arenaMood.far = far;
       arenaMood.lastPhase = phase;
@@ -2856,7 +2812,8 @@
       }
       if (!arenaMood) return;
       var m = arenaMood;
-      var pulse = 0.5 + 0.5 * Math.sin(worldClock * (m.phase === 3 ? 8 : 3.2));
+      var pulse = settings.reducedMotion ? 0.5 :
+        0.5 + 0.5 * Math.sin(worldClock * (m.phase === 3 ? 8 : 3.2));
       if (m.arenaGlowMat) m.arenaGlowMat.opacity = 0.026 + pulse * 0.02;
       if (m.arenaGlowCoreMat) m.arenaGlowCoreMat.opacity = 0.042 + pulse * 0.033;
       if (m.phase === 2) {
@@ -2870,7 +2827,7 @@
         if (mode === 'playing') {
           m.sparkT -= dt;
           if (m.sparkT <= 0) {
-            m.sparkT = 0.9 + Math.random() * 1.5;
+            m.sparkT = 0.9 + visualRandom() * 1.5;
             spawnParticles(m.sparkPoint, 0xffb24f, 2, 1.5, 0.32, 0.022);
           }
         }
@@ -2890,13 +2847,6 @@
     // footprint of the previous indoor arena while keeping the same scale.
     var ARENA = { minX: -23, maxX: 23, minZ: -47.2, maxZ: 20 };
     var BOSS_ARENA = { minX: -20.5, maxX: 20.5, minZ: -43.2, maxZ: -24 };
-    var ZONE = {
-      entrance: { minZ: 9.5, maxZ: 20, label: '入口堆场' },
-      containers: { minZ: -8.5, maxZ: 9.5, label: '集装箱区' },
-      loading: { minZ: -22.5, maxZ: -8.5, label: '装卸平台' },
-      boss: { minZ: -43.5, maxZ: -22.5, label: '开放船坞' },
-      extraction: { minZ: -47.2, maxZ: -43.5, label: '撤离码头' }
-    };
     var EYE = 1.62;
     var PLAYER_HEIGHT = 1.78;
     var STEP_HEIGHT = 0.36;
@@ -2927,8 +2877,11 @@
         maxZ: cz + sz / 2,
         y0: y0 === undefined ? 0 : y0,
         y1: y1 === undefined ? 4 : y1,
-        surface: surface || 'steel'
+        surface: surface || 'steel',
+        disabled: false,
+        prop: null
       });
+      return colliders[colliders.length - 1];
     }
 
     function addBox(x, y, z, sx, sy, sz, material, collide) {
@@ -3643,26 +3596,12 @@
 
     var skyBackdrop = null;
 
-    function addSkyBand(y, h, hex) {
-      var mesh = new THREE.Mesh(G.plane, matBasic(hex, { fog: false }));
-      mesh.position.set(0, y, -118);
-      mesh.scale.set(280, h, 1);
-      scene.add(mesh);
-    }
-
     function buildSkyBackdrop() {
       if (highVisuals) {
         buildHighHarbor();
         return;
       }
-      // Bands are stacked to fake an orange-to-indigo sunset gradient.  They
-      // are ordinary unlit geometry, not a shader or an imported skybox.
-      addSkyBand(2.5, 13, 0xd9694a);
-      addSkyBand(8.2, 11, 0xff8b55);
-      addSkyBand(15.0, 10, 0x9a5478);
-      addSkyBand(23.0, 13, 0x533a72);
-      addSkyBand(35.0, 22, 0x241b3c);
-      addSkyBand(-6.0, 6, 0x3a2438);
+      PBDockArt.fallbackSky(THREE, scene, G.plane, matBasic(0xffffff, { fog: false }));
 
       var sunDisc = new THREE.Mesh(G.circle, matBasic(0xffd49a, {
         transparent: true, opacity: 0.92, blending: 'additive',
@@ -3743,9 +3682,9 @@
       }
 
       var water = new THREE.Mesh(G.plane, IM.water);
-      water.position.set(0, -0.62, -82);
+      water.position.set(0, -0.63, -46);
       water.rotation.x = -Math.PI / 2;
-      water.scale.set(220, 76, 1);
+      water.scale.set(256, 193, 1);
       scene.add(water);
 
       // Long sunset glints on the water, merged into one additive batch.
@@ -3777,6 +3716,7 @@
     function buildDockFloor() {
       var ix, iz, x, z, i, key;
       var bolt = getBatch('steel2');
+      var fasteners = [[], [], [], []];
       var seam = getBatch('steelDeep');
       for (ix = 0; ix < 18; ix++) {
         for (iz = 0; iz < 27; iz++) {
@@ -3797,14 +3737,33 @@
           if (b) b.box(x, 0.012, z, 2.42, 0.018, 2.42, 0);
           if (hash2(iz, ix) > 0.48 && bolt) {
             for (i = -1; i <= 1; i += 2) {
-              bolt.box(x + i * 1.02, 0.026, z - 1.02, 0.055, 0.014, 0.055, 0);
-              bolt.box(x + i * 1.02, 0.026, z + 1.02, 0.055, 0.014, 0.055, 0);
+              if (highVisuals) {
+                fasteners[zone].push(x + i * 1.02, 0.026, z - 1.02, x + i * 1.02, 0.026, z + 1.02);
+              } else {
+                bolt.box(x + i * 1.02, 0.026, z - 1.02, 0.055, 0.014, 0.055, 0);
+                bolt.box(x + i * 1.02, 0.026, z + 1.02, 0.055, 0.014, 0.055, 0);
+              }
             }
           }
           if (seam && (ix % 3 === 0 || iz % 4 === 0)) {
             seam.box(x, 0.028, z, 2.46, 0.012, 0.035, 0);
           }
         }
+      }
+
+      for (var offsets of fasteners) {
+        if (!offsets.length) continue;
+        var deckBolts = new THREE.Mesh(G.box, IM.steel2);
+        deckBolts.instanceOffsets = new Float32Array(offsets);
+        deckBolts.scale.set(0.055, 0.014, 0.055);
+        var minZ = Infinity, maxZ = -Infinity;
+        for (var i = 2; i < offsets.length; i += 3) {
+          minZ = Math.min(minZ, offsets[i]);
+          maxZ = Math.max(maxZ, offsets[i]);
+        }
+        deckBolts.worldBounds = [-23, 0.015, minZ - 0.06, 23, 0.04, maxZ + 0.06];
+        deckBolts.detailDistance = 31;
+        scene.add(deckBolts);
       }
 
       // Oil, puddles and scrap: a handful of merged decals keeps the huge
@@ -3898,7 +3857,23 @@
         }
       }
 
-      if (highVisuals) addWetDeckDetails();
+      if (highVisuals) {
+        addWetDeckDetails();
+        var crack = getBatch('steelDeep');
+        for (var j = 0; j < 18; j++) {
+          var startX = (hash2(j, 81) - 0.5) * 42;
+          var startZ = 18 - hash2(j, 93) * 61;
+          for (var k = 0; k < 3; k++) {
+            var endX = startX + 0.12 + hash2(j, k + 101) * 0.52;
+            var endZ = startZ + (hash2(j, k + 99) - 0.5) * 0.49;
+            var dx = endX - startX, dz = endZ - startZ;
+            crack.box((startX + endX) / 2, 0.024, (startZ + endZ) / 2,
+              Math.hypot(dx, dz), 0.004, 0.009, -Math.atan2(dz, dx));
+            startX = endX;
+            startZ = endZ;
+          }
+        }
+      }
 
       // The boss deck keeps a wide hazard ring and a clear central lane.
       for (i = 0; i < 40; i++) {
@@ -4011,14 +3986,14 @@
       addCollider(-6.2, 15.4, 1.5, 1.1, 0, 0.62);
       addStandable(-6.2, 15.4, 1.5, 1.1, 0.62, 'ENTRY CRATE');
       addCrate(-6.2, 0.62, 15.35, 0.9, 0.5, 0.8, -0.06, '');
-      addCollider(-6.2, 15.35, 0.9, 0.8, 0.62, 1.12);
+      addCollider(-6.2, 15.35, 0.9, 0.8, 0.62, 1.12, 'wood');
       addStandable(-6.2, 15.35, 0.9, 0.8, 1.12, 'ENTRY CRATE');
 
       addCrate(6.4, 0, 16.2, 1.7, 0.85, 1.1, -0.04, 'danger');
-      addCollider(6.4, 16.2, 1.7, 1.1, 0, 0.85);
+      addCollider(6.4, 16.2, 1.7, 1.1, 0, 0.85, 'wood');
       addStandable(6.4, 16.2, 1.7, 1.1, 0.85, 'ENTRY CRATE');
       addCrate(6.3, 0.85, 16.1, 0.9, 0.45, 0.75, 0.1, '');
-      addCollider(6.3, 16.1, 0.9, 0.75, 0.85, 1.3);
+      addCollider(6.3, 16.1, 0.9, 0.75, 0.85, 1.3, 'wood');
       addStandable(6.3, 16.1, 0.9, 0.75, 1.3, 'ENTRY CRATE');
 
       addContainer(-15.5, 16.4, 3.2, 1.35, 2.3, 0, 'containerOrange', 0, {
@@ -4034,7 +4009,7 @@
       addControlCabinet(14.5, 18.6, Math.PI, 1.2, 1.6);
       addCollider(14.5, 18.6, 1.25, 0.62, 0, 1.6);
       addCrate(12.4, 0, 18.4, 1.1, 0.7, 0.8, 0.04, '');
-      addCollider(12.4, 18.4, 1.1, 0.8, 0, 0.7);
+      addCollider(12.4, 18.4, 1.1, 0.8, 0, 0.7, 'wood');
       addStandable(12.4, 18.4, 1.1, 0.8, 0.7, 'ENTRY CRATE');
 
       addFloorGrate(-13.6, 12.0, 1.8, 1.1);
@@ -4102,7 +4077,7 @@
       addPallet(-6.9, -5.2, -0.06);
       addPallet(-6.9, -3.7, 0.02);
       addCrate(8.6, 0, 8.2, 1.35, 0.95, 1.0, 0.04, 'danger');
-      addCollider(8.6, 8.2, 1.35, 1.0, 0, 0.95);
+      addCollider(8.6, 8.2, 1.35, 1.0, 0, 0.95, 'wood');
       addStandable(8.6, 8.2, 1.35, 1.0, 0.95, 'YARD CRATE');
       addBarrelCluster(-20.2, 4.2, 4);
       addCollider(-20.2, 4.2, 1.5, 1.5, 0, 0.95);
@@ -4169,7 +4144,7 @@
       addControlCabinet(5.6, -16.8, Math.PI, 1.15, 1.55);
       addCollider(5.6, -16.8, 1.2, 0.6, 0, 1.55);
       addCrate(px - 3.8, ph, pz + 1.0, 1.2, 0.8, 0.9, 0.04, 'danger');
-      addCollider(px - 3.8, pz + 1.0, 1.2, 0.9, ph, ph + 0.8);
+      addCollider(px - 3.8, pz + 1.0, 1.2, 0.9, ph, ph + 0.8, 'wood');
       addStandable(px - 3.8, pz + 1.0, 1.2, 0.9, ph + 0.8, 'REPAIR CRATE');
       addBarrelCluster(5.8, -20.8, 3);
       addCollider(5.8, -20.8, 1.3, 1.3, 0, 0.95);
@@ -4189,10 +4164,17 @@
         if (pedGlow) pedGlow.box(tpx, 1.5, tpz + 1.17, 1.6, 0.16, 0.03, 0);
       }
       addCrate(8.4, 0, -8.6, 1.5, 0.9, 1.0, -0.05, '');
-      addCollider(8.4, -8.6, 1.5, 1.0, 0, 0.9);
+      addCollider(8.4, -8.6, 1.5, 1.0, 0, 0.9, 'wood');
       addStandable(8.4, -8.6, 1.5, 1.0, 0.9, 'LOAD CRATE');
       addForklift(5.4, -13.1, -0.3);
       addBarrelCluster(-20.5, -14.5, 4);
+      var reelFrame = getBatch('steelDark');
+      var cable = getBatch('cable');
+      reelFrame.pipe(19.18, 1.06, -18.9, 19.28, 1.06, -18.9, 0.40, 14);
+      cable.pipe(19.28, 1.06, -18.9, 19.71, 1.06, -18.9, 0.31, 14);
+      reelFrame.pipe(19.71, 1.06, -18.9, 19.80, 1.06, -18.9, 0.40, 14);
+      addSignPanel(17.6, 0.89, -18.38, 0, 0.68, 0.16, 'TOOLS', 'white');
+      getBatch('containerOrange').box(17.6, 0.81, -18.56, 0.68, 0.21, 0.35, 0);
       addCollider(-20.5, -14.5, 1.5, 1.5, 0, 0.95);
 
       addZoneLightPool(px, pz, 5.0, 'Warm');
@@ -4497,6 +4479,7 @@
       weapons[0].reserve = Math.min(WEAPON_DEFS[0].reserveMax, weapons[0].reserve + 50);
       weapons[1].reserve = Math.min(WEAPON_DEFS[1].reserveMax, weapons[1].reserve + 16);
       st.cooldown = SUPPLY_COOLDOWN;
+      events.emit('supply.complete', { station: st.id });
       addToast('补给完成 // +40 HP / 步枪 +50 / 散射 +16', 'good');
       flashScreen(0x5affb0, false);
       spawnRingFx(new THREE.Vector3(st.x, st.baseY + 0.12, st.z),
@@ -4512,6 +4495,7 @@
         !player.grounded || player.dashT > 0) return false;
       var st = nearestSupply(SUPPLY_RANGE);
       if (!st || !canResupply(st)) return false;
+      events.emit('supply.start', { station: st.id });
       supply.active = true;
       supply.station = st;
       supply.progress = 0;
@@ -4532,14 +4516,13 @@
         supplyStations[i].cooldown = Math.max(0, supplyStations[i].cooldown - dt);
       }
       supply.near = nearestSupply(SUPPLY_RANGE);
-      var moveHeld = input.keys.KeyW || input.keys.KeyA ||
-        input.keys.KeyS || input.keys.KeyD;
+      var moveHeld = held('forward') || held('left') || held('back') || held('right');
 
       if (supply.active) {
         var moved = Math.abs(player.pos.x - supply.startX) +
           Math.abs(player.pos.z - supply.startZ);
         if (!supply.near || supply.near !== supply.station ||
-          !input.keys.KeyE || !player.grounded || moved > 0.22 || moveHeld) {
+          !held('interact') || !player.grounded || moved > 0.22 || moveHeld) {
           cancelSupply();
           addToast('补给中断 // 保持静止并按住 E', 'warn');
         } else {
@@ -4550,16 +4533,10 @@
         }
       }
 
-      if (!supply.active && supply.near && input.keys.KeyE && !moveHeld &&
+      if (!supply.active && supply.near && held('interact') && !moveHeld &&
         player.grounded && player.dashT <= 0 && canResupply(supply.near) &&
         player.slashT <= 0) {
-        supply.active = true;
-        supply.station = supply.near;
-        supply.progress = 0;
-        supply.startX = player.pos.x;
-        supply.startZ = player.pos.z;
-        input.fireHeld = false;
-        input.fireQueued = false;
+        tryStartSupply();
       }
 
       updateSupplyVisuals();
@@ -4618,16 +4595,69 @@
       }
     }
 
+    function repeatDockPart(key, offsets, width, height, depth) {
+      if (!offsets.length) return;
+      if (!highVisuals) {
+        var batch = getBatch(key);
+        for (var i = 0; i < offsets.length; i += 3) {
+          batch.box(offsets[i], offsets[i + 1], offsets[i + 2], width, height, depth, 0);
+        }
+        return;
+      }
+      var mesh = new THREE.Mesh(G.box, IM[key]);
+      mesh.instanceOffsets = new Float32Array(offsets);
+      mesh.scale.set(width, height, depth);
+      var bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      for (var i = 0; i < offsets.length; i += 3) {
+        for (var axis = 0; axis < 3; axis++) {
+          bounds[axis] = Math.min(bounds[axis], offsets[i + axis]);
+          bounds[axis + 3] = Math.max(bounds[axis + 3], offsets[i + axis]);
+        }
+      }
+      for (var axis = 0; axis < 3; axis++) {
+        var pad = (axis === 0 ? width : axis === 1 ? height : depth) * 0.5;
+        bounds[axis] -= pad;
+        bounds[axis + 3] += pad;
+      }
+      mesh.worldBounds = bounds;
+      scene.add(mesh);
+    }
+
     function buildArena() {
+      var landmarks = new THREE.Group();
+      var set = PBPortSetpieces.build({
+        batch: getBatch, sign: addSignPanel, floor: drawFloorText, high: highVisuals,
+        shape: function (model, finish, x, y, z, w, h, d) {
+          modelPart(landmarks, MODELS[model], IM[finish] || IM.steel2, x, y, z, w, h, d);
+        }
+      });
       // Outdoor sunset dockyard, linear from the entrance at +Z to the
       // extraction pier at -Z.  The former indoor shell is intentionally gone.
       buildSkyBackdrop();
       buildDockFloor();
       buildDockPerimeter();
+      batchZone = 1;
       buildEntranceYard();
+      set.entrance();
+      batchZone = 2;
       buildContainerYard();
+      set.freight();
+      batchZone = 3;
       buildLoadingPlatform();
+      set.repair();
+      batchZone = 5;
+      PBSectors.backgroundPier(getBatch, repeatDockPart);
+      PBSectors.layout({
+        batch: getBatch, standable: addStandable, collider: addCollider, floor: drawFloorText,
+        pipe: addPipeRun,
+        sign: function (x, y, z, width, height, label) { addSignPanel(x, y, z, 0, width, height, label, 'white'); }
+      });
+      batchZone = 4;
       buildBossDock();
+      set.basin();
+      set.extraction();
+      PBModelKit.bake(THREE, landmarks, scene, highVisuals);
+      batchZone = 0;
       buildDockLamps();
       buildSupplyStations();
       commitArt();
@@ -4685,7 +4715,7 @@
       var frameMat = matLambert(0x1d2b42, { specular: 0.38, roughness: 0.36 });
       tuneSurface(frameMat, 0.9, 0.6, 0.32);
       tuneTexture(frameMat, DETAIL_TILE.metal, 0.7, 0.65);
-      var top = new THREE.Mesh(G.box, frameMat);
+      var top = new THREE.Mesh(MODELS.turret, frameMat);
       top.position.set(0, 2.05, 0);
       top.scale.set(4.6, 0.4, 0.7);
       group.add(top);
@@ -4731,11 +4761,18 @@
       exit.glowMat = matBasic(C.red, {
         transparent: true, opacity: 0.14, blending: 'additive', depthWrite: false
       });
-      var glow = new THREE.Mesh(G.circle, exit.glowMat);
-      glow.rotation.x = Math.PI / 2;
-      glow.scale.set(1.45, 1.45, 1.45);
+      exit.glowMat.decal = PBDockArt.scorchDecal(THREE);
+      var glow = new THREE.Mesh(G.plane, exit.glowMat);
+      glow.scale.set(2.9, 2.9, 1);
       glow.position.set(0, 0.5, -0.03);
       group.add(glow);
+
+      for (var post of [-2.10, 2.10]) {
+        modelPart(group, MODELS.seal, IM.steel2, post, 0.50, 0.34, 0.12, 1.35, 0.15, Math.PI / 2);
+        var conduit = modelPart(group, MODELS.tube, frameMat, post * 0.90, 0.53, 0.38, 0.058, 2.55, 0.058);
+        conduit.castShadow = true;
+        conduit.staticShadow = true;
+      }
 
       exit.lightMat = matBasic(C.red, {
         transparent: true, opacity: 0.5, blending: 'additive', depthWrite: false
@@ -4772,7 +4809,7 @@
     // Eight fixed candidate emitters.  Quality decides how many are enabled:
     // High may use all eight, Balanced five, Fallback four.  Every PointLight is
     // built once here; the frame path only moves/retunes existing objects.
-    var LOCAL_LIGHT_CANDIDATES = 8;
+    var LOCAL_LIGHT_CANDIDATES = 9;
     var localLights = [];
     var localRig = {
       entry: null, lamp: null, pipe: null, core: null,
@@ -4837,6 +4874,10 @@
       registerLocalLight('supplyEntry', {
         x: -9.2, y: 1.0, z: 16.3, hex: 0xffa94d,
         intensity: 0.55, range: 5.2, priority: 0.95
+      });
+      registerLocalLight('muzzle', {
+        x: 0, y: 1.5, z: 0, hex: 0xffc278,
+        intensity: 2.5, range: 3.4, priority: 4, enabled: false
       });
       registerLocalLight('supplyRepair', {
         x: 14.0, y: 1.6, z: -16.0, hex: 0xffa94d,
@@ -4947,6 +4988,15 @@
           Math.sin(worldClock * 1.6 + entry.phase) * 0.05;
       }
 
+      var muzzleEntry = localRig.muzzle;
+      if (muzzleEntry) {
+        muzzleEntry.enabled = mode === 'playing' && muzzleT > 0;
+        if (muzzleEntry.enabled) {
+          muzzleWorldPos(muzzleEntry.light.position);
+          muzzleEntry.light.intensity = muzzleEntry.baseIntensity * (muzzleT / 0.06);
+        }
+      }
+
       // Score = priority falloff by distance.  Sorting this eight-element array
       // in place keeps the pool bounded and allocation-free.
       for (i = 0; i < localLights.length; i++) {
@@ -5003,10 +5053,11 @@
       if (opts.rotationY) group.rotation.y = opts.rotationY;
       if (opts.rotationZ) group.rotation.z = opts.rotationZ;
 
-      var geo = opts.shape === 'box' ? G.box : (opts.shape === 'cylinder' ? G.cylinder : G.cone);
+      var geo = opts.shape === 'box' ? G.lowSphere : (opts.shape === 'cylinder' ? G.cylinder : G.cone);
       var outerMat = volumeMaterial(opts.hex, opts.opacity);
       var coreMat = volumeMaterial(opts.coreHex === undefined ? 0xffffff : opts.coreHex,
         opts.coreOpacity === undefined ? opts.opacity * 0.7 : opts.coreOpacity);
+      outerMat.softVolume = coreMat.softVolume = true;
       var outer = new THREE.Mesh(geo, outerMat);
       var core = new THREE.Mesh(geo, coreMat);
       var radius = opts.radius || 1;
@@ -5032,8 +5083,8 @@
         core: core,
         outerMat: outerMat,
         coreMat: coreMat,
-        baseOuter: opts.opacity,
-        baseCore: opts.coreOpacity === undefined ? opts.opacity * 0.7 : opts.coreOpacity,
+        baseOuter: opts.opacity * 0.32,
+        baseCore: (opts.coreOpacity === undefined ? opts.opacity * 0.7 : opts.coreOpacity) * 0.36,
         phase: arand(0, Math.PI * 2),
         speed: opts.speed || 1.2,
         kind: opts.kind || 'static',
@@ -5473,23 +5524,31 @@
       return matBasic(hex, { depthTest: false, depthWrite: false, viewModel: true });
     }
 
-    var gunBody = vmMat(0x9db4ca);
-    var gunLight = vmMat(0xc9dceb);
-    var gunMid = vmMat(0x60788f);
-    var gunDark = vmMat(0x2c3a4c);
-    var gunDeep = vmMat(0x151f2b);
+    function vmFinish(hex, roughness) {
+      var material = vmMat(hex);
+      material.unlit = !highVisuals;
+      material.specular = 0.68;
+      material.roughness = roughness;
+      return material;
+    }
+
+    var gunBody = vmFinish(0x9db4ca, 0.4);
+    var gunLight = vmFinish(0xc9dceb, 0.33);
+    var gunMid = vmFinish(0x60788f, 0.52);
+    var gunDark = vmFinish(0x2c3a4c, 0.62);
+    var gunDeep = vmFinish(0x151f2b, 0.69);
     var gunGlow = vmMat(C.cyan);
     var gunGlowSoft = vmMat(0xc9fbff);
     var gunPink = vmMat(C.magenta);
     var gunPinkSoft = vmMat(0xffb4e2);
     var gunViolet = vmMat(C.violet);
-    var gunVioletDeep = vmMat(0x4a2a86);
+    var gunVioletDeep = vmFinish(0x4a2a86, 0.31);
     var gunVioletSoft = vmMat(0xe4d4ff);
-    var gunWhite = vmMat(0xf4edff);
+    var gunWhite = vmFinish(0xf4edff, 0.29);
     var gunAmber = vmMat(C.amber);
-    var gloveMat = vmMat(0x24434a);
-    var gloveLight = vmMat(0x47707a);
-    var gloveDark = vmMat(0x12262c);
+    var gloveMat = vmFinish(0x24434a, 0.83);
+    var gloveLight = vmFinish(0x47707a, 0.73);
+    var gloveDark = vmFinish(0x12262c, 0.91);
     var bladeAuraMat = matBasic(C.violet, {
       transparent: true,
       opacity: 0.22,
@@ -5499,9 +5558,7 @@
       depthWrite: false
     });
 
-    // Viewmodels are intentionally unlit for painter-order readability; the
-    // renderer's unlit branch turns `detail` into a sub-pixel wear grain, so the
-    // rifle, scattergun and blade stop reading as flat colour at 960/1280 px.
+    // Camera-relative PBR lights reveal the viewmodel finish. Energy trim stays emissive.
     tuneSurface(gunBody, 1.0, 0.45, 0.72);
     tuneSurface(gunLight, 1.0, 0.5, 0.78);
     tuneSurface(gunMid, 1.0, 0.4, 0.7);
@@ -5512,8 +5569,9 @@
     tuneSurface(gloveMat, 1.0, 0.2, 0.58);
     tuneSurface(gloveLight, 1.0, 0.25, 0.64);
     tuneSurface(gloveDark, 1.0, 0.2, 0.52);
-    // Unlit viewmodel surfaces sample the same shared atlas in object space, so
-    // chipped paint and brushed metal read at 960/1280 px without scene lighting.
+    MATERIAL_LIBRARY.weaponFinish.push(gunBody, gunLight, gunMid, gunDark, gunDeep, gunWhite);
+    MATERIAL_LIBRARY.rubber.push(gloveMat, gloveDark);
+    // Use the same surface library in object space on held weapons.
     tuneTexture(gunBody, DETAIL_TILE.metal, 1.0, 0.46);
     tuneTexture(gunLight, DETAIL_TILE.metal, 1.0, 0.4);
     tuneTexture(gunMid, DETAIL_TILE.chips, 1.0, 0.44);
@@ -5533,7 +5591,7 @@
         metalMat.specular = mp < 3 ? 0.59 : 0.36;
         metalMat.roughness = mp < 3 ? 0.28 : 0.46;
         metalMat.textureScale = 2.4;
-        metalMat.textureMix = 0.73;
+        metalMat.textureMix = mp < 3 ? 0.34 : 0.27;
       }
       var gloves = [gloveMat, gloveLight, gloveDark];
       for (var glv = 0; glv < gloves.length; glv++) {
@@ -5543,14 +5601,14 @@
         gloves[glv].textureScale = 2.3;
         gloves[glv].textureMix = 0.70;
       }
-      gunBody.color.setHex(0xc4b9a2);
-      gunMid.color.setHex(0x617886);
-      gunDark.color.setHex(0x374b57);
+      gunBody.color.setHex(0xabaeab);
+      gunMid.color.setHex(0x5f665f);
+      gunDark.color.setHex(0x313939);
       gunDeep.color.setHex(0x242832);
       gunGlow.radiance = 2.9;
-      gunGlowSoft.radiance = 3.8;
+      gunGlowSoft.radiance = 1.6;
       gunPink.radiance = 2.35;
-      gunPinkSoft.radiance = 3.7;
+      gunPinkSoft.radiance = 2.1;
       gunViolet.radiance = 1.45;
       gunVioletSoft.radiance = 2.2;
       gunWhite.radiance = 2.85;
@@ -5595,15 +5653,13 @@
       return geo;
     }
 
-    var HULL = highVisuals ? {
+    var HULL = {
       housing: sculptHull([[-0.5, 0.72, 0.68], [-0.34, 1, 1], [0.33, 1, 1], [0.5, 0.77, 0.70]], 0.28),
       cowl: sculptHull([[-0.5, 0.55, 0.50, -0.09], [-0.27, 0.92, 0.92],
         [0.24, 1, 1], [0.5, 0.68, 0.68]], 0.34),
       shield: sculptHull([[-0.5, 0.52, 0.68], [-0.27, 0.88, 0.95],
-        [0.21, 1.0, 1.0], [0.5, 0.78, 0.72]], 0.39),
-      blade: sculptHull([[-0.5, 0.03, 0.02, 0.32], [-0.39, 0.38, 0.56, 0.13],
-        [-0.18, 0.76, 0.95, -0.06], [0.25, 1, 1], [0.5, 0.88, 0.86, 0.05]], 0.70)
-    } : null;
+        [0.21, 1.0, 1.0], [0.5, 0.78, 0.72]], 0.39)
+    };
 
     function modelPart(parent, geometry, material, x, y, z, sx, sy, sz, ry, rz) {
       var part = new THREE.Mesh(geometry, material);
@@ -5745,15 +5801,32 @@
     };
 
     var weaponGroups = [];
+    var viewSwayYaw = 0, viewSwayPitch = 0;
+    var lastViewYaw = 0, lastViewPitch = 0;
 
     function buildPulseRifle() {
       var rifle = new THREE.Group();
+      var oxide = vmFinish(0x5b3938, 0.48);
+      var carbon = vmFinish(0x271f25, 0.88);
+      tuneTexture(oxide, DETAIL_TILE.metal, 3.1, 0.60);
+      tuneTexture(carbon, DETAIL_TILE.rust, 3.4, 0.52);
+      vmRing(rifle, oxide, 0, 0.03, -0.675, 0.031, 'z', 952);
+      vmRing(rifle, carbon, 0, 0.03, -0.700, 0.032, 'z', 952);
+      var graphite = vmFinish(0x303539, 0.54);
+      var ceramic = vmFinish(0xa29786, 0.49);
+      tuneSurface(ceramic, 0.96, 0.16, 0.46);
+      tuneTexture(ceramic, DETAIL_TILE.paint, 2.15, 0.62);
+      tuneTexture(graphite, DETAIL_TILE.metal, 3.2, 0.42);
+      vmBox(rifle, graphite, -0.04, 0.068, 0.246, 0.035, 0.012, 0.139, 952);
+      for (var slot = 0; slot < 5; slot++) {
+        vmBox(rifle, gunDeep, -0.041, 0.075, 0.192 + slot * 0.025, 0.028, 0.004, 0.007, 953);
+      }
 
       // Layered stock and butt pad, readable from the rear of the viewmodel.
-      vmBox(rifle, gunMid, 0, 0.012, 0.235, 0.072, 0.078, 0.19);
+      vmHull(rifle, MODELS.rifle, graphite, 0, 0.012, 0.235, 0.090, 0.096, 0.23);
       vmBox(rifle, gunDark, 0, 0.012, 0.33, 0.082, 0.105, 0.038);
       vmBox(rifle, gunDeep, 0, 0.012, 0.351, 0.058, 0.09, 0.006, 951);
-      vmBox(rifle, gunLight, 0, 0.058, 0.245, 0.056, 0.02, 0.15);
+      vmHull(rifle, MODELS.rifle, ceramic, 0, 0.058, 0.245, 0.072, 0.036, 0.165);
       vmBox(rifle, gunDark, 0, -0.035, 0.235, 0.078, 0.038, 0.11);
       vmBox(rifle, gunDeep, -0.038, 0.012, 0.235, 0.006, 0.05, 0.13, 951);
       vmBox(rifle, gunMid, 0, 0.012, 0.14, 0.09, 0.085, 0.05);
@@ -5765,7 +5838,9 @@
       // Receiver: dark chassis, pale upper, side armour and seam bolts.
       if (highVisuals) {
         vmHull(rifle, HULL.housing, gunDark, 0, -0.008, -0.06, 0.144, 0.133, 0.43);
-        vmHull(rifle, HULL.cowl, gunBody, 0, 0.067, -0.079, 0.147, 0.083, 0.369);
+        vmHull(rifle, MODELS.rifle, ceramic, 0, 0.074, -0.112, 0.162, 0.100, 0.451);
+        vmHull(rifle, MODELS.rifle, gunDark, -0.047, 0.09, -0.121, 0.095, 0.040, 0.39, 951);
+        vmHull(rifle, MODELS.rifle, gunMid, 0, 0.053, 0.229, 0.086, 0.079, 0.23);
         vmHull(rifle, HULL.shield, gunMid, 0, 0.04, 0.20, 0.104, 0.108, 0.204);
         vmBox(rifle, gunDeep, -0.074, 0.018, -0.08, 0.011, 0.052, 0.154, 951);
         vmCyl(rifle, gunGlowSoft, -0.080, 0.018, -0.105, 0.011, 0.107, 'z', 951);
@@ -5819,7 +5894,11 @@
         vmBox(rifle, gunMid, 0, 0.119, -0.25 + i * 0.052, 0.062, 0.012, 0.024);
       }
       if (highVisuals) {
-        vmHull(rifle, HULL.housing, gunDeep, 0, 0.161, 0.022, 0.100, 0.085, 0.127);
+        vmHull(rifle, MODELS.optic, graphite, 0, 0.161, 0.022, 0.052, 0.041, 0.141);
+        vmHull(rifle, MODELS.seal, gunMid, 0, 0.161, 0.041, 0.043, 0.037, 0.036, 952);
+        vmHull(rifle, MODELS.joint, gunDark, -0.045, 0.17, 0.036, 0.016, 0.016, 0.023, 952, Math.PI / 2);
+        vmHull(rifle, MODELS.scatter, ceramic, 0, 0.205, 0.014, 0.071, 0.019, 0.098, 953);
+        vmHull(rifle, MODELS.lens, gunGlow, 0, 0.166, 0.094, 0.020, 0.017, 0.003, 953);
         vmRing(rifle, gunMid, 0, 0.166, 0.082, 0.035, 'z');
         vmRing(rifle, gunLight, 0, 0.166, 0.094, 0.028, 'z', 951);
         vmCyl(rifle, gunGlow, 0, 0.166, 0.092, 0.018, 0.006, 'z', 951);
@@ -5855,7 +5934,7 @@
       vmCyl(rifle, gunDeep, 0, 0.03, -0.63, 0.042, 0.035, 'z', 951);
       vmRing(rifle, gunLight, 0, 0.03, -0.605, 0.045, 'z', 951);
       vmRing(rifle, gunDark, 0, 0.03, -0.65, 0.038, 'z', 951);
-      vmCyl(rifle, gunDark, 0, 0.03, -0.688, 0.03, 0.05, 'z', 951);
+      vmHull(rifle, MODELS.optic, graphite, 0, 0.03, -0.688, 0.032, 0.034, 0.08, 952);
       vmBox(rifle, gunDeep, -0.031, 0.03, -0.688, 0.01, 0.014, 0.03, 951);
       vmBox(rifle, gunDeep, 0.031, 0.03, -0.688, 0.01, 0.014, 0.03, 951);
       vmCyl(rifle, gunGlow, 0, 0.03, -0.712, 0.016, 0.012, 'z', 951);
@@ -5916,12 +5995,21 @@
 
     function buildRiftScatter() {
       var scatter = new THREE.Group();
+      var tempered = vmFinish(0x674841, 0.56);
+      var casing = vmFinish(0x674437, 0.48);
+      tuneSurface(casing, 0.94, 0.39, 0.43);
+      tuneTexture(casing, DETAIL_TILE.paint, 2.14, 0.61);
+      tuneTexture(tempered, DETAIL_TILE.metal, 3.6, 0.58);
+      for (var brace = 0; brace < 3; brace++) {
+        vmBox(scatter, gunDark, -0.112, 0.057, -0.323 - brace * 0.052, 0.018, 0.047, 0.013, 951, 0, 0, 0.25);
+      }
 
       // Squat receiver with a pale upper shell and dark side armour.
       if (highVisuals) {
         vmHull(scatter, HULL.housing, gunDark, 0, 0.008, -0.065, 0.228, 0.168, 0.42);
-        vmHull(scatter, HULL.shield, gunBody, 0, 0.086, -0.061, 0.224, 0.112, 0.324);
-        vmHull(scatter, HULL.cowl, gunBody, 0, 0.017, -0.411, 0.242, 0.131, 0.28);
+        vmHull(scatter, MODELS.scatter, casing, 0, 0.086, -0.075, 0.248, 0.142, 0.375);
+        vmHull(scatter, MODELS.scatter, gunDeep, -0.065, 0.128, -0.075, 0.11, 0.058, 0.30, 951);
+        vmHull(scatter, MODELS.scatter, casing, 0, 0.017, -0.411, 0.242, 0.131, 0.28);
         vmBox(scatter, gunDeep, -0.113, 0.024, -0.089, 0.013, 0.040, 0.177, 951);
         for (var shellCell = 0; shellCell < 3; shellCell++) {
           vmBox(scatter, gunPink, -0.121, 0.024, -0.147 + shellCell * 0.057, 0.006, 0.021, 0.026, 951);
@@ -5975,10 +6063,16 @@
       vmBox(scatter, gunDeep, 0, 0.065, -0.40, 0.20, 0.014, 0.22);
       vmBox(scatter, gunMid, 0, 0.075, -0.30, 0.07, 0.055, 0.12);
       vmBox(scatter, gunBody, 0, 0.035, -0.525, 0.225, 0.10, 0.06);
-      vmBox(scatter, gunDark, 0, 0.035, -0.557, 0.215, 0.07, 0.012, 951);
+      vmHull(scatter, MODELS.scatter, gunDark, 0, 0.035, -0.557, 0.224, 0.084, 0.052, 951);
+      vmHull(scatter, MODELS.joint, casing, 0, 0.099, -0.57, 0.026, 0.026, 0.068, 952);
+      for (var channel = 0; channel < 4; channel++) {
+        vmHull(scatter, MODELS.seal, tempered, -0.10, 0.10, -0.30 - channel * 0.043,
+          0.013, 0.013, 0.024, 952, Math.PI / 2);
+      }
       vmBox(scatter, gunAmber, -0.095, 0.035, -0.525, 0.008, 0.045, 0.02, 951);
       for (i = 0; i < barrelXs.length; i++) {
         vmCyl(scatter, gunDark, barrelXs[i], 0.035, -0.635, 0.0185, 0.17, 'z', 951);
+        vmRing(scatter, tempered, barrelXs[i], 0.035, -0.688, 0.020, 'z', 952);
         vmCyl(scatter, gunPink, barrelXs[i], 0.035, -0.66, 0.024, 0.016, 'z', 951);
         vmCyl(scatter, gunPinkSoft, barrelXs[i], 0.035, -0.706, 0.011, 0.012, 'z', 951);
       }
@@ -5987,7 +6081,7 @@
       var drum = new THREE.Group();
       drum.position.set(0, -0.15, -0.02);
       scatter.add(drum);
-      vmCyl(drum, gunDeep, 0, 0, 0, 0.105, 0.18, 'x');
+      vmHull(drum, MODELS.joint, gunDeep, 0, 0, 0, 0.104, 0.110, 0.18, 950, Math.PI / 2);
       vmCyl(drum, gunPink, -0.064, 0, 0, 0.108, 0.016, 'x', 951);
       vmCyl(drum, gunMid, -0.022, 0, 0, 0.11, 0.016, 'x', 951);
       vmCyl(drum, gunPink, 0.022, 0, 0, 0.108, 0.016, 'x', 951);
@@ -6037,6 +6131,12 @@
 
     function buildPhaseBlade() {
       var blade = new THREE.Group();
+      var spine = vmFinish(0x31374a, 0.41);
+      tuneSurface(spine, 0.94, 0.64, 0.44);
+      tuneTexture(spine, DETAIL_TILE.metal, 2.4, 0.58);
+      for (var vent = 0; vent < 3; vent++) {
+        vmBox(blade, gunWhite, 0, 0.042, -0.063 - vent * 0.022, 0.048, 0.005, 0.007, 953);
+      }
 
       // Substantial stacked grip and lit pommel.
       vmCyl(blade, gunDeep, 0, 0, 0.065, 0.03, 0.21, 'z');
@@ -6044,7 +6144,7 @@
         vmCyl(blade, i % 2 ? gunMid : gunDark, 0, 0, 0.145 - i * 0.034, 0.036, 0.018, 'z', 951);
       }
       vmBox(blade, gunVioletDeep, -0.033, 0, 0.06, 0.006, 0.018, 0.14, 951);
-      vmCyl(blade, gunMid, 0, 0, 0.183, 0.042, 0.045, 'z');
+      vmHull(blade, MODELS.joint, gunMid, 0, 0, 0.183, 0.041, 0.041, 0.047, 951);
       vmRing(blade, gunViolet, 0, 0, 0.198, 0.04, 'z', 951);
       vmCyl(blade, gunVioletSoft, 0, 0, 0.208, 0.018, 0.008, 'z', 951);
       vmRing(blade, gunDark, 0.04, 0, 0.18, 0.022, 'z', 951);
@@ -6070,13 +6170,17 @@
       // Phase aura, layered blade, dark back-spine and pale cutting edge.
       var aura;
       if (highVisuals) {
-        aura = vmHull(blade, HULL.blade, bladeAuraMat, 0, 0.02, -0.348, 0.069, 0.155, 0.52, 949);
-        vmHull(blade, HULL.blade, gunVioletDeep, 0, 0.023, -0.34, 0.058, 0.13, 0.49);
-        vmHull(blade, HULL.blade, gunViolet, -0.021, 0.005, -0.344, 0.035, 0.103, 0.483, 951);
-        vmHull(blade, HULL.blade, gunVioletSoft, -0.033, 0.005, -0.348, 0.010, 0.051, 0.475, 951);
-        vmHull(blade, HULL.blade, gunWhite, 0, -0.037, -0.352, 0.019, 0.019, 0.485, 951);
+        aura = vmHull(blade, MODELS.blade, bladeAuraMat, 0, 0.02, -0.348, 0.069, 0.155, 0.52, 949);
+        vmHull(blade, MODELS.blade, gunVioletDeep, 0, 0.023, -0.34, 0.058, 0.13, 0.49);
+        vmHull(blade, MODELS.blade, gunViolet, -0.021, 0.005, -0.344, 0.035, 0.103, 0.483, 951);
+        vmHull(blade, MODELS.blade, gunVioletSoft, -0.033, 0.005, -0.348, 0.010, 0.051, 0.475, 951);
+        vmHull(blade, MODELS.blade, gunWhite, 0, -0.037, -0.352, 0.019, 0.019, 0.485, 951);
         vmHull(blade, HULL.shield, gunBody, 0, 0.006, -0.076, 0.174, 0.083, 0.114);
-        vmHull(blade, HULL.cowl, gunDark, 0, 0.070, -0.299, 0.044, 0.035, 0.32);
+        vmHull(blade, MODELS.blade, spine, 0, 0.075, -0.33, 0.046, 0.052, 0.47, 952);
+        for (var stud = 0; stud < 4; stud++) {
+          vmHull(blade, MODELS.lens, gunWhite, -0.016, 0.080, -0.144 - stud * 0.064,
+            0.005, 0.008, 0.009, 953);
+        }
       } else {
         aura = vmBox(blade, bladeAuraMat, 0, 0.018, -0.33, 0.056, 0.13, 0.39, 949);
         vmBox(blade, gunVioletDeep, 0, 0.02, -0.32, 0.05, 0.115, 0.39);
@@ -6227,6 +6331,18 @@
           blade.position.set(0, 0, 0);
         }
       }
+      if (dt > 0 && !settings.reducedMotion) {
+        var blend = 1 - Math.exp(-dt * 11);
+        var yawTarget = clamp(angleWrap(player.yaw - lastViewYaw) * -2.9, -0.18, 0.18);
+        var pitchTarget = clamp((player.pitch - lastViewPitch) * 2.3, -0.14, 0.14);
+        viewSwayYaw += (yawTarget - viewSwayYaw) * blend;
+        viewSwayPitch += (pitchTarget - viewSwayPitch) * blend;
+        lastViewYaw = player.yaw;
+        lastViewPitch = player.pitch;
+        viewRoot.rotation.y += viewSwayYaw;
+        viewRoot.rotation.x += viewSwayPitch;
+        viewRoot.rotation.z = viewSwayYaw * -0.38;
+      }
     }
 
     /* --------------------------------------------------------------- state */
@@ -6253,29 +6369,12 @@
       airDashUsed: false,
       slashT: 0,
       slashHitDone: false,
+      slashSurface: false,
       slashId: 0,
       supplyBlock: 0
     };
 
-    var WEAPON_DEFS = [
-      {
-        id: 'rifle', slot: '01', name: '脉冲步枪', en: 'PULSE RIFLE',
-        auto: true, magSize: 30, reserveMax: 120,
-        dmg: 20, interval: 0.105, reloadTime: 1.25,
-        spread: 0.014, pellets: 1, range: 55, color: C.cyan
-      },
-      {
-        id: 'scatter', slot: '02', name: '裂能散射器', en: 'RIFT SCATTER',
-        auto: false, magSize: 8, reserveMax: 48,
-        dmg: 12, interval: 0.62, reloadTime: 1.1,
-        spread: 0.075, pellets: 5, range: 32, color: C.magenta
-      },
-      {
-        id: 'blade', slot: '03', name: '相位刃', en: 'PHASE BLADE',
-        melee: true, interval: 0.48, range: 3.0, arc: 0.58, dmg: 56, color: C.violet,
-        slashTime: 0.4, slashHitStart: 0.1, slashHitEnd: 0.23
-      }
-    ];
+    var WEAPON_DEFS = PBMission.weapons;
 
     var weapons = WEAPON_DEFS.map(function (def) {
       return {
@@ -6318,8 +6417,7 @@
     var input = {
       keys: Object.create(null),
       fireHeld: false,
-      fireQueued: false,
-      sprint: false
+      fireQueued: false
     };
 
     var mode = 'menu';
@@ -6351,13 +6449,42 @@
     var pending = [];
 
     var boss = null;
+    var bossWreck = null;
     var bossEverSpawned = false;
 
-    var flow = {
-      wave: 0,
-      clearT: 0,
-      bossActive: false
-    };
+    var flow = PBMission.create(events);
+    var enemyDirector = PBEnemyDirector.create(events, hasLineOfSight, resolveCircle);
+    var sound = PBAudio.create(events, settings.volumes, !toolsMode.silent);
+    var reportedAudioError = '';
+    sound.bind();
+    var cinematics = PBCinematics.create(THREE, events, camera, stage, byId('sceneShot'));
+    var caption = byId('radioCaption');
+    var damageDirection = byId('damageDirection');
+    var alertState = byId('alertState');
+    var bossWarning = byId('bossWarning');
+    var captionT = 0;
+    var warningT = 0;
+    var encounterAlertT = 0;
+    var settingsDialog = byId('settingsPanel');
+    var sectorEffects = PBSectors.create(THREE, renderer, scene, IM, G.plane, assets);
+    var worldObjects;
+    var impactMarks;
+    var inspection = 0;
+    var sprintPose = 0;
+    var landingKick = 0;
+    var stepDistance = 0;
+    var aimIdle = 0;
+    var cameraFov = settings.fov;
+    var lookStress = 0;
+    var shouldWarn = !!(highVisuals && !surfaceLayers || surfaceSamplingEnabled && !highVisuals && !surfaceDetailTexture?._glTexture);
+
+    function bound(name) { return settings.bindings[name]; }
+    function held(name) {
+      var code = bound(name);
+      return input.keys[code] || (code === 'ShiftLeft' && input.keys.ShiftRight);
+    }
+    function keyName(name) { return PBSettings.keyLabel(bound(name)); }
+
 
     var MAX = {
       bullets: 90,
@@ -6381,7 +6508,8 @@
 
     function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
     function lerp(a, b, t) { return a + (b - a) * t; }
-    function rnd(a, b) { return a + Math.random() * (b - a); }
+    function rnd(a, b) { return a + gameplayRandom() * (b - a); }
+    function fxRandom(a, b) { return a + visualRandom() * (b - a); }
     function dist2D(a, b) {
       var dx = a.x - b.x, dz = a.z - b.z;
       return Math.sqrt(dx * dx + dz * dz);
@@ -6428,6 +6556,7 @@
       for (var pass = 0; pass < 2; pass++) {
         for (var i = 0; i < colliders.length; i++) {
           var c = colliders[i];
+          if (c.disabled) continue;
           // Low surfaces can be stepped onto; anything whose top is already
           // below the boots no longer blocks horizontal movement.
           if (c.y1 <= feet + STEP_HEIGHT + 0.02) continue;
@@ -6559,23 +6688,22 @@
     function rayBox(ox, oy, oz, dx, dy, dz, box) {
       var tmin = 0;
       var tmax = Infinity;
-      var o = [ox, oy, oz];
-      var d = [dx, dy, dz];
-      var lo = [box.minX, box.y0, box.minZ];
-      var hi = [box.maxX, box.y1, box.maxZ];
-      for (var a = 0; a < 3; a++) {
-        if (Math.abs(d[a]) < 1e-8) {
-          if (o[a] < lo[a] || o[a] > hi[a]) return -1;
-        } else {
-          var t1 = (lo[a] - o[a]) / d[a];
-          var t2 = (hi[a] - o[a]) / d[a];
-          if (t1 > t2) { var tt = t1; t1 = t2; t2 = tt; }
-          if (t1 > tmin) tmin = t1;
-          if (t2 < tmax) tmax = t2;
-          if (tmin > tmax) return -1;
+      for (var axis = 0; axis < 3; axis++) {
+        var o = axis === 0 ? ox : axis === 1 ? oy : oz;
+        var d = axis === 0 ? dx : axis === 1 ? dy : dz;
+        var lo = axis === 0 ? box.minX : axis === 1 ? box.y0 : box.minZ;
+        var hi = axis === 0 ? box.maxX : axis === 1 ? box.y1 : box.maxZ;
+        if (Math.abs(d) < 1e-8) {
+          if (o < lo || o > hi) return -1;
+          continue;
         }
+        var first = (lo - o) / d;
+        var last = (hi - o) / d;
+        tmin = Math.max(tmin, Math.min(first, last));
+        tmax = Math.min(tmax, Math.max(first, last));
+        if (tmin > tmax) return -1;
       }
-      return tmin > 0 ? tmin : -1;
+      return tmin > 0 ? tmin : (tmax > 0 ? tmax : -1);
     }
 
     function raySphere(ox, oy, oz, dx, dy, dz, center, radius) {
@@ -6594,19 +6722,32 @@
 
     function wallHitDistance(ox, oy, oz, dx, dy, dz, maxT, impact) {
       var best = maxT;
-      if (impact) impact.surface = '';
+      if (impact) {
+        impact.surface = '';
+        impact.collider = null;
+      }
       for (var i = 0; i < colliders.length; i++) {
-        var t = rayBox(ox, oy, oz, dx, dy, dz, colliders[i]);
+        var collider = colliders[i];
+        if (collider.disabled) continue;
+        var t = rayBox(ox, oy, oz, dx, dy, dz, collider);
         if (t > 0 && t < best) {
           best = t;
-          if (impact) impact.surface = colliders[i].surface;
+          if (impact) {
+            impact.surface = collider.tireBand && oy + t * dy < 0.48 ? 'rubber' : collider.surface;
+            impact.collider = collider;
+          }
         }
       }
       if (dy < -1e-6) {
         var tFloor = -oy / dy;
         if (tFloor > 0 && tFloor < best) {
           best = tFloor;
-          if (impact) impact.surface = 'concrete';
+          if (impact) {
+            var x = ox + tFloor * dx;
+            var z = oz + tFloor * dz;
+            impact.surface = Math.abs(x) > 16 || z < -22 ? 'concrete' : 'asphalt';
+            impact.collider = null;
+          }
         }
       }
       return best;
@@ -6646,6 +6787,50 @@
     /* ------------------------------------------------------------------ fx */
 
     var muzzleT = 0;
+    var muzzleSmokeT = 0;
+    var muzzleSmoke = [];
+    var scorch = null;
+
+    function buildMuzzleSmoke() {
+      for (var i = 0; i < 3; i++) {
+        var material = matBasic(0x99a5af, {
+          transparent: true, opacity: 0, depthTest: false, depthWrite: false, viewModel: true
+        });
+        material.softVolume = true;
+        var puff = new THREE.Mesh(G.lowSphere, material);
+        puff.visible = false;
+        puff.renderOrder = 300;
+        viewRoot.add(puff);
+        muzzleSmoke.push(puff);
+      }
+    }
+
+    function buildScorch() {
+      var material = matBasic(0x210c12, { transparent: true, opacity: 0.48, depthWrite: false });
+      material.decal = PBDockArt.scorchDecal(THREE);
+      scorch = new THREE.Mesh(G.plane, material);
+      scorch.rotation.x = -Math.PI / 2;
+      scorch.scale.set(5.4, 3.1, 1);
+      scorch.visible = false;
+      scorch.renderOrder = 1;
+      scene.add(scorch);
+    }
+
+    function emitMuzzleSmoke() { muzzleSmokeT = 0.22; }
+
+    function updateMuzzleSmoke(dt) {
+      muzzleSmokeT = Math.max(0, muzzleSmokeT - dt);
+      var age = 0.22 - muzzleSmokeT;
+      for (var i = 0; i < muzzleSmoke.length; i++) {
+        var puff = muzzleSmoke[i];
+        var t = age - i * 0.023;
+        puff.visible = muzzleSmokeT > 0 && t >= 0;
+        if (!puff.visible) continue;
+        puff.position.set(-0.02 + i * 0.021, 0.05 + t * 0.63, -1.06 - t * 0.60);
+        puff.scale.set(0.017 + t * 0.18, 0.022 + t * 0.25, 0.016 + t * 0.18);
+        puff.material.opacity = Math.min(0.23, t * 8) * muzzleSmokeT / 0.22;
+      }
+    }
     var lastDryToast = -10;
     var bossDefeated = false;
 
@@ -6673,8 +6858,53 @@
       });
     }
 
+    var impactFlashes = [];
+
+    function buildImpactFlashPool() {
+      var texture = PBDockArt.scorchDecal(THREE);
+      for (var i = 0; i < 10; i++) {
+        var material = fxAdditive(0xffffff, 0, 2.1);
+        material.decal = texture;
+        var mesh = new THREE.Mesh(G.plane, material);
+        mesh.visible = false;
+        mesh.renderOrder = 20;
+        scene.add(mesh);
+        impactFlashes.push({ mesh: mesh, life: 0, size: 0, time: 0 });
+      }
+    }
+
+    function flashImpact(point, direction, color, size) {
+      for (var flash of impactFlashes) {
+        if (flash.life > 0) continue;
+        flash.life = 0.092;
+        flash.time = 0;
+        flash.size = size;
+        flash.mesh.visible = true;
+        flash.mesh.position.copy(point).addScaledVector(direction, -0.075);
+        flash.mesh.material.color.setHex(color);
+        flash.mesh.material.opacity = 0.72;
+        flash.mesh.quaternion.copy(camera.quaternion);
+        flash.mesh.scale.set(size, size, 1);
+        return;
+      }
+    }
+
+    function updateImpactFlashes(dt) {
+      for (var flash of impactFlashes) {
+        if (flash.life <= 0) continue;
+        flash.life -= dt;
+        flash.time += dt;
+        flash.mesh.visible = flash.life > 0;
+        if (!flash.mesh.visible) continue;
+        var t = flash.time / 0.092;
+        flash.mesh.quaternion.copy(camera.quaternion);
+        flash.mesh.scale.set(flash.size * (0.75 + 1.3 * t), flash.size * (0.54 + t), 1);
+        flash.mesh.material.opacity = 0.72 * (1 - t) * (1 - t);
+      }
+    }
+
     function makeParticleMesh() {
-      var mesh = new THREE.Mesh(G.box, fxAdditive(0xffffff, 1));
+      var mesh = new THREE.Mesh(MODELS.shard, fxAdditive(0xffffff, 1));
       mesh.visible = false;
       scene.add(mesh);
       return mesh;
@@ -6690,9 +6920,19 @@
     }
 
     function buildParticlePool() {
+      var dustMap = PBDockArt.scorchDecal(THREE);
+      renderer._texture(dustMap);
       for (var i = 0; i < MAX.particles; i++) {
+        var mesh = makeParticleMesh();
+        var dust = matBasic(0xa09b91, { transparent: true, opacity: 0, depthWrite: false });
+        dust.decal = dustMap;
+        var shard = matLambert(0x80817c, { transparent: true, opacity: 0, depthWrite: false, roughness: 0.65 });
         particles.push({
-          mesh: makeParticleMesh(),
+          mesh: mesh,
+          energy: mesh.material,
+          dust: dust,
+          shard: shard,
+          kind: 'energy',
           alive: false,
           vel: new THREE.Vector3(),
           ttl: 0,
@@ -6702,7 +6942,12 @@
       }
     }
 
-    function spawnParticles(pos, color, count, speed, life, size) {
+    function spawnParticles(pos, color, count, speed, life, size, kind) {
+      if (mode === 'playing' && kind !== 'energy') {
+        var distance = camera.position.distanceToSquared(pos);
+        if (distance > 60 * 60) return;
+        if (distance > 30 * 30) count = Math.ceil(count * 0.45);
+      }
       for (var i = 0; i < count; i++) {
         var slot = null;
         for (var j = 0; j < particles.length; j++) {
@@ -6712,16 +6957,20 @@
         // the extra spark instead of constructing anything inside the loop.
         if (!slot) return;
         slot.alive = true;
-        slot.ttl = slot.max = life * rnd(0.65, 1.25);
-        slot.size = size * rnd(0.55, 1.25);
+        slot.ttl = slot.max = life * fxRandom(0.65, 1.25);
+        slot.size = size * fxRandom(0.55, 1.25);
+        slot.kind = kind || 'energy';
+        slot.mesh.material = slot.kind === 'dust' ? slot.dust : slot.kind === 'fragment' ? slot.shard : slot.energy;
+        slot.mesh.geometry = slot.kind === 'dust' ? G.plane : MODELS.shard;
+        slot.mesh.rotation.set(0, 0, 0);
         slot.mesh.visible = true;
         slot.mesh.position.copy(pos);
         slot.mesh.material.color.setHex(color);
         slot.mesh.material.opacity = 1;
         slot.mesh.scale.setScalar(slot.size);
-        slot.vel.set(rnd(-1, 1), rnd(-0.25, 1), rnd(-1, 1));
+        slot.vel.set(fxRandom(-1, 1), fxRandom(-0.25, 1), fxRandom(-1, 1));
         if (slot.vel.lengthSq() < 1e-5) slot.vel.set(0, 1, 0);
-        slot.vel.normalize().multiplyScalar(speed * rnd(0.35, 1));
+        slot.vel.normalize().multiplyScalar(speed * fxRandom(0.35, 1));
       }
     }
 
@@ -6735,12 +6984,21 @@
           p.mesh.visible = false;
           continue;
         }
-        p.vel.y -= 6.5 * dt;
+        p.vel.y += (p.kind === 'dust' ? 0.42 : -6.5) * dt;
         p.vel.multiplyScalar(Math.max(0, 1 - 1.6 * dt));
         p.mesh.position.addScaledVector(p.vel, dt);
         var k = p.ttl / p.max;
-        p.mesh.material.opacity = k;
-        p.mesh.scale.setScalar(p.size * (0.35 + 0.65 * k));
+        if (p.kind === 'dust') {
+          var progress = 1 - k;
+          p.mesh.quaternion.copy(camera.quaternion);
+          p.mesh.material.opacity = Math.min(0.34, progress * 2.2) * k * k;
+          p.mesh.scale.setScalar(p.size * (0.55 + progress * 2));
+        } else {
+          p.mesh.material.opacity = k;
+          p.mesh.rotation.y += dt * 12;
+          p.mesh.rotation.z += dt * 7;
+          p.mesh.scale.setScalar(p.size * (0.35 + 0.65 * k));
+        }
       }
     }
 
@@ -6773,16 +7031,16 @@
         }
         if (!slot) return;
         slot.alive = true;
-        slot.ttl = slot.max = rnd(0.18, 0.38);
-        slot.size = rnd(0.012, 0.028) * (0.8 + power * 0.25);
+        slot.ttl = slot.max = fxRandom(0.18, 0.38);
+        slot.size = fxRandom(0.012, 0.028) * (0.8 + power * 0.25);
         slot.mesh.visible = true;
         slot.mesh.position.copy(pos);
         slot.mesh.material.color.setHex(color);
         slot.mesh.material.opacity = 1;
-        slot.mesh.scale.set(slot.size, slot.size, slot.size * rnd(1.5, 3.4));
-        slot.vel.set(rnd(-1, 1), rnd(-0.2, 1.35), rnd(-1, 1));
+        slot.mesh.scale.set(slot.size, slot.size, slot.size * fxRandom(1.5, 3.4));
+        slot.vel.set(fxRandom(-1, 1), fxRandom(-0.2, 1.35), fxRandom(-1, 1));
         if (slot.vel.lengthSq() < 1e-5) slot.vel.set(0, 1, 0);
-        slot.vel.normalize().multiplyScalar(speed * rnd(0.45, 1.2));
+        slot.vel.normalize().multiplyScalar(speed * fxRandom(0.45, 1.2));
       }
     }
 
@@ -6806,7 +7064,7 @@
         }
         var k = s.ttl / s.max;
         s.mat.opacity = Math.min(1, k * 1.4);
-        s.mesh.scale.set(s.size, s.size, s.size * (1.4 + s.vel.length() * 0.05));
+        s.mesh.scale.set(s.size, s.size, s.size * (1.8 + s.vel.length() * 0.33));
       }
     }
 
@@ -6825,7 +7083,7 @@
     function buildSlashPool() {
       for (var i = 0; i < SLASH_FX_LIMIT; i++) {
         var mat = fxAdditive(0xc9a2ff, 0.9);
-        var mesh = new THREE.Mesh(G.slashArc, mat);
+        var mesh = new THREE.Mesh(MODELS.slash, mat);
         mesh.visible = false;
         mesh.renderOrder = 9;
         scene.add(mesh);
@@ -7012,9 +7270,9 @@
         var midMat = fxAdditive(0xffffff, 0.6, 1.4);
         var haloMat = fxAdditive(0xffffff, 0.2);
         var tipMat = fxAdditive(0xffffff, 0.9, 2.5);
-        var core = new THREE.Mesh(G.box, coreMat);
-        var mid = new THREE.Mesh(G.box, midMat);
-        var halo = new THREE.Mesh(G.box, haloMat);
+        var core = new THREE.Mesh(MODELS.projectile, coreMat);
+        var mid = new THREE.Mesh(MODELS.projectile, midMat);
+        var halo = new THREE.Mesh(MODELS.projectile, haloMat);
         var tip = new THREE.Mesh(G.lowSphere, tipMat);
         core.renderOrder = 953;
         mid.renderOrder = 952;
@@ -7106,7 +7364,7 @@
         var group = new THREE.Group();
         var coreMat = fxAdditive(0xffffff, 0.95, 2.6);
         var haloMat = fxAdditive(0xffffff, 0.28);
-        var core = new THREE.Mesh(G.lowSphere, coreMat);
+        var core = new THREE.Mesh(MODELS.projectile, coreMat);
         var halo = new THREE.Mesh(G.lowSphere, haloMat);
         core.renderOrder = 953;
         halo.renderOrder = 952;
@@ -7314,7 +7572,7 @@
     var screenFlashToken = 0;
 
     function flashScreen(hex, strong) {
-      if (!ui.screenFlash) return;
+      if (!ui.screenFlash || settings.reducedMotion) return;
       var s = (hex === undefined ? 0x57f2ff : hex).toString(16);
       while (s.length < 6) s = '0' + s;
       ui.screenFlash.style.setProperty('--flash-color', '#' + s);
@@ -7337,10 +7595,16 @@
 
     /* --------------------------------------------------------------- damage */
 
-    function damagePlayer(amount) {
+    function damagePlayer(amount, from) {
       if (mode !== 'playing') return;
       if (player.invuln > 0 || player.dashT > 0) return;
       player.hp -= amount;
+      events.emit('player.damage', { amount });
+      if (from) {
+        var bearing = Math.atan2(from.x - player.pos.x, player.pos.z - from.z) + player.yaw;
+        damageDirection.style.setProperty('--damage-angle', bearing + 'rad');
+        damageDirection.hidden = false;
+      }
       player.lastHit = gameTime;
       player.flashT = Math.min(1, player.flashT + 0.55 + amount * 0.012);
       player.shake = Math.max(player.shake, 0.18 + Math.min(0.5, amount * 0.02));
@@ -7361,7 +7625,7 @@
     function pointInColliders(p) {
       for (var i = 0; i < colliders.length; i++) {
         var c = colliders[i];
-        if (p.x > c.minX && p.x < c.maxX && p.z > c.minZ && p.z < c.maxZ && p.y > c.y0 && p.y < c.y1) {
+        if (!c.disabled && p.x > c.minX && p.x < c.maxX && p.z > c.minZ && p.z < c.maxZ && p.y > c.y0 && p.y < c.y1) {
           return true;
         }
       }
@@ -7375,7 +7639,22 @@
       return new THREE.Vector3(dir.x * c + dir.z * s, dir.y, -dir.x * s + dir.z * c);
     }
 
-    var shotImpact = highVisuals ? { surface: '' } : null;
+    var shotImpact = { surface: '', collider: null };
+    var shotOrigin = new THREE.Vector3();
+    var shotForward = new THREE.Vector3();
+    var shotDirection = new THREE.Vector3();
+    var shotEnd = new THREE.Vector3();
+    var shotMuzzle = new THREE.Vector3();
+
+    function materialImpact(surface, point, direction, collider) {
+      events.emit('combat.impact', { surface, point, level: 0.78 });
+      if (surface !== 'water' && surface !== 'energyCore' && surface !== 'enemyArmor' && surface !== 'shield') {
+        impactMarks.place(surface, point, direction, collider);
+      } else if (surface === 'water') {
+        renderer.addWaterRipple(point.x, point.z, worldClock);
+      }
+      PBCombatVisuals.impactFx(surface, point, spawnSparks, spawnParticles, spawnRingFx);
+    }
 
     function traceShot(origin, dir, range, dmg, color) {
       var best = range;
@@ -7412,40 +7691,48 @@
         hitMissile = null;
       }
 
-      var point = new THREE.Vector3().copy(origin).addScaledVector(dir, best);
-      var hit = false;
+      var waterImpact = false;
+      var floorDist = dir.y < -0.001 ? -origin.y / dir.y : Infinity;
+      if (!hitEnemy && !hitBoss && !hitMissile && dir.y < -0.001 &&
+          (Math.abs(wallT - floorDist) < 0.0001 || wallT === range)) {
+        // Water is visual only. A solid obstruction still wins the gameplay ray.
+        var waterDist = (-0.63 - origin.y) / dir.y;
+        var wx = origin.x + waterDist * dir.x;
+        var wz = origin.z + waterDist * dir.z;
+        if (waterDist > 0 && waterDist <= range &&
+            (Math.abs(wx) > 23.7 || wz < -46.5 || wz > 21)) {
+          best = waterDist;
+          waterImpact = true;
+        }
+      }
+      var point = shotEnd.copy(origin).addScaledVector(dir, best);
 
       if (hitEnemy) {
         var wasAlive = !hitEnemy.dead;
         damageEnemy(hitEnemy, dmg, color, point);
-        spawnImpactFx(point, color, 1.25);
-        hit = true;
+        materialImpact('enemyArmor', point, dir);
+        flashImpact(point, dir, 0xb3c3ff, 0.44);
         if (wasAlive) registerHit(hitEnemy.dead);
       } else if (hitBoss) {
+        var shielded = boss.invuln > 0 || boss.shield > 0;
         damageBoss(dmg, color, point);
-        spawnImpactFx(point, color, 1.5);
+        materialImpact(shielded ? 'shield' : 'energyCore', point, dir);
+        flashImpact(point, dir, boss && boss.shield > 0 ? C.cyan : 0xffc0eb, 0.67);
         registerHit(false);
-        hit = true;
       } else if (hitMissile) {
         var mi = missiles.indexOf(hitMissile);
         if (mi >= 0) killMissileAt(mi);
         spawnImpactFx(point, C.amber, 1.2);
         registerHit(false);
-        hit = true;
-      } else if (shotImpact) {
-        if (shotImpact.surface === 'steel') {
-          spawnSparks(point, 0xffbd78, 5, 4.1, 1.05);
-        } else if (shotImpact.surface === 'wood') {
-          spawnParticles(point, 0xb88353, 8, 3.1, 0.32, 0.041);
-        } else if (shotImpact.surface === 'concrete') {
-          spawnParticles(point, 0x9b9ba4, 7, 1.8, 0.42, 0.058);
+      } else if (waterImpact || shotImpact.surface) {
+        if (shotImpact.surface === 'steel') flashImpact(point, dir, 0xffc788, 0.29);
+        materialImpact(waterImpact ? 'water' : shotImpact.surface, point, dir, shotImpact.collider);
+        if (!waterImpact && shotImpact.collider?.prop) {
+          worldObjects.damage(shotImpact.collider.prop, dmg, point);
         }
-      } else {
-        spawnParticles(point, 0xb9d4e4, 3, 2.2, 0.22, 0.035);
-        spawnSparks(point, 0xc9e6f2, 4, 3.0, 0.9);
       }
 
-      return { point: point, dist: best, hit: hit };
+      return point;
     }
 
     function fireWeapon() {
@@ -7455,9 +7742,11 @@
       var d = w.def;
       if (w.reloading > 0 || w.cool > 0) return;
       if (player.slashT > 0) return;
+      inspection = 0;
 
       if (!d.melee && w.mag <= 0) {
         w.cool = 0.2;
+        events.emit('weapon.dry');
         if (w.reserve > 0) {
           startReload();
         } else if (gameTime - lastDryToast > 1.4) {
@@ -7467,6 +7756,7 @@
         return;
       }
 
+      events.emit('weapon.fire', { weapon: d.id });
       if (d.melee) {
         startBladeSwing();
         w.cool = d.interval;
@@ -7481,18 +7771,22 @@
       player.shake = Math.max(player.shake, d.id === 'scatter' ? 0.3 : 0.1);
       muzzleT = 0.06;
 
-      var origin = new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z);
-      var baseDir = forwardVec(new THREE.Vector3());
-      var tracerFrom = muzzleWorldPos(new THREE.Vector3());
+      var origin = shotOrigin.copy(player.pos);
+      var baseDir = forwardVec(shotForward);
+      // The renderer updates the scene graph after simulation, so take the
+      // current player and weapon transforms before sampling the muzzle.
+      camera.updateMatrixWorld();
+      var tracerFrom = muzzleWorldPos(shotMuzzle);
+      emitMuzzleSmoke();
 
       for (var p = 0; p < d.pellets; p++) {
-        var dir = baseDir.clone();
+        var dir = shotDirection.copy(baseDir);
         dir.x += rnd(-d.spread, d.spread);
         dir.y += rnd(-d.spread, d.spread);
         dir.z += rnd(-d.spread, d.spread);
         dir.normalize();
-        var result = traceShot(origin, dir, d.range, d.dmg, d.color);
-        spawnTracer(tracerFrom, result.point, d.color);
+        var point = traceShot(origin, dir, d.range, d.dmg, d.color);
+        spawnTracer(tracerFrom, point, d.color);
       }
 
       if (d.id === 'scatter') {
@@ -7506,6 +7800,7 @@
       if (player.slashT > 0) return;
       player.slashT = def.slashTime;
       player.slashHitDone = false;
+      player.slashSurface = false;
       player.slashId++;
       player.shake = Math.max(player.shake, 0.18);
       spawnSlashArc();
@@ -7535,6 +7830,7 @@
           if (to.dot(fwd) > def.arc) {
             e.slashMark = swingId;
             damageEnemy(e, def.dmg, C.violet, e.pos);
+            materialImpact('enemyArmor', e.pos);
             e.knock.addScaledVector(fwd, 9);
             hitAnything = true;
           }
@@ -7548,6 +7844,7 @@
           bto.multiplyScalar(1 / bdist);
           if (bto.dot(fwd) > 0.3) {
             boss.slashMark = swingId;
+            materialImpact(boss.invuln > 0 || boss.shield > 0 ? 'shield' : 'energyCore', boss.pos);
             damageBoss(42, C.violet, boss.pos);
             hitAnything = true;
           }
@@ -7584,6 +7881,15 @@
         }
       }
 
+      if (!hitAnything && !player.slashSurface) {
+        var swipe = forwardVec(shotDirection);
+        var wall = wallHitDistance(origin.x, origin.y, origin.z, swipe.x, swipe.y, swipe.z, def.range, shotImpact);
+        if (shotImpact.surface) {
+          player.slashSurface = true;
+          var contact = shotEnd.copy(origin).addScaledVector(swipe, wall);
+          materialImpact(shotImpact.surface, contact, swipe, shotImpact.collider);
+        }
+      }
       if (hitAnything) {
         var hitPos = origin.clone().addScaledVector(fwd, 1.5);
         hitPos.y = player.pos.y - 0.5;
@@ -7610,7 +7916,9 @@
       var w = currentGun();
       var d = w.def;
       if (d.melee || w.reloading > 0 || w.mag >= d.magSize || w.reserve <= 0) return;
+      inspection = 0;
       w.reloading = d.reloadTime;
+      events.emit('weapon.reload', { weapon: d.id, complete: false });
     }
 
     function switchWeapon(index) {
@@ -7620,6 +7928,8 @@
       player.slashT = 0;
       player.slashHitDone = false;
       currentWeapon = index;
+      inspection = 0;
+      events.emit('weapon.switch');
       muzzleT = 0;
       muzzleFlash.visible = false;
       player.recoil = 0.5;
@@ -7641,6 +7951,7 @@
           var take = Math.min(need, w.reserve);
           w.mag += take;
           w.reserve -= take;
+          events.emit('weapon.reload', { weapon: w.def.id, complete: true });
         }
       }
 
@@ -7657,13 +7968,14 @@
       input.fireQueued = false;
 
       muzzleT = Math.max(0, muzzleT - dt);
+      updateMuzzleSmoke(dt);
       muzzleFlash.visible = muzzleT > 0;
       if (muzzleT > 0) {
-        var s = highVisuals ? 0.38 + Math.random() * 0.13 : 0.1 + Math.random() * 0.08;
+        var s = highVisuals ? 0.38 + visualRandom() * 0.13 : 0.1 + visualRandom() * 0.08;
         muzzleFlash.scale.set(s, s, s);
         muzzleFlash.rotation.z += dt * 22;
-        muzzleHaloMat.opacity = 0.16 + Math.random() * 0.16;
-        muzzleRingMat.opacity = 0.2 + Math.random() * 0.28;
+        muzzleHaloMat.opacity = 0.16 + visualRandom() * 0.16;
+        muzzleRingMat.opacity = 0.2 + visualRandom() * 0.28;
       }
 
       updateViewmodel(dt);
@@ -7674,8 +7986,8 @@
     function tryDash() {
       if (mode !== 'playing' || player.dashCd > 0) return;
       if (!player.grounded && player.airDashUsed) return;
-      var f = (input.keys.KeyW ? 1 : 0) - (input.keys.KeyS ? 1 : 0);
-      var s = (input.keys.KeyD ? 1 : 0) - (input.keys.KeyA ? 1 : 0);
+      var f = (held('forward') ? 1 : 0) - (held('back') ? 1 : 0);
+      var s = (held('right') ? 1 : 0) - (held('left') ? 1 : 0);
       var dir = new THREE.Vector3();
       if (f !== 0 || s !== 0) {
         var fwd = flatForward(new THREE.Vector3());
@@ -7686,6 +7998,7 @@
       }
       if (!player.grounded) player.airDashUsed = true;
       player.dashT = 0.16;
+      events.emit('player.dash');
       player.dashCd = 3.0;
       player.invuln = Math.max(player.invuln, 0.36);
       player.dashDir.copy(dir);
@@ -7698,6 +8011,8 @@
       if (mode !== 'playing' || player.pulseCd > 0) return;
       if (supply.active || player.supplyBlock > 0) return;
       player.pulseCd = 8.0;
+      events.emit('player.pulse');
+      impactMarks.disturb(player.pos, worldClock);
       spawnRingFx(player.pos, 6.2, C.cyan, 0.55, 0.9);
       spawnRingFx(player.pos, 4.4, C.magenta, 0.42, 1.35);
       spawnParticles(player.pos, C.cyan, 28, 9, 0.6, 0.07);
@@ -7740,59 +8055,99 @@
 
     /* ---------------------------------------------------------------- player */
 
+    var moveForward = new THREE.Vector3();
+    var moveRight = new THREE.Vector3();
+    var moveVector = new THREE.Vector3();
+
     function updatePlayer(dt) {
       player.dashCd = Math.max(0, player.dashCd - dt);
       player.pulseCd = Math.max(0, player.pulseCd - dt);
       player.invuln = Math.max(0, player.invuln - dt);
       player.recoil = Math.max(0, player.recoil - dt * 5.5);
       player.flashT = Math.max(0, player.flashT - dt * 2.2);
-      ui.damage.style.opacity = (player.flashT * 0.9).toFixed(3);
+      ui.damage.style.opacity = (player.flashT * (settings.reducedMotion ? 0.33 : 0.68)).toFixed(3);
+      if (player.flashT < 0.03) damageDirection.hidden = true;
 
-      var f = (input.keys.KeyW ? 1 : 0) - (input.keys.KeyS ? 1 : 0);
-      var s = (input.keys.KeyD ? 1 : 0) - (input.keys.KeyA ? 1 : 0);
-      var sprint = !!(input.keys.ShiftLeft || input.keys.ShiftRight);
+      var f = (held('forward') ? 1 : 0) - (held('back') ? 1 : 0);
+      var s = (held('right') ? 1 : 0) - (held('left') ? 1 : 0);
+      var sprint = !!held('sprint');
       var moving = f !== 0 || s !== 0;
+      var oldX = player.pos.x;
+      var oldZ = player.pos.z;
 
       if (player.dashT > 0) {
         player.dashT -= dt;
         movePlayer(player.dashDir.x * 26 * dt, player.dashDir.z * 26 * dt);
         player.invuln = Math.max(player.invuln, 0.22);
-        if (Math.random() < 0.85) spawnParticles(player.pos, C.violet, 2, 1.6, 0.22, 0.045);
+        if (visualRandom() < 0.85) spawnParticles(player.pos, C.violet, 2, 1.6, 0.22, 0.045);
       } else if (moving) {
         var speed = sprint ? 9.4 : 6.1;
-        var fwd = flatForward(new THREE.Vector3());
-        var right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
-        var mv = new THREE.Vector3();
+        var fwd = flatForward(moveForward);
+        var right = moveRight.set(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+        var mv = moveVector.set(0, 0, 0);
         mv.addScaledVector(fwd, f).addScaledVector(right, s);
         if (mv.lengthSq() > 0.0001) mv.normalize().multiplyScalar(speed);
         movePlayer(mv.x * dt, mv.z * dt);
       }
 
+      var wasGrounded = player.grounded;
+      var landingVelocity = player.velocityY;
       updateVertical(dt);
+      if (!wasGrounded && player.grounded && landingVelocity < -1) {
+        landingKick = Math.min(0.08, -landingVelocity * 0.01);
+        events.emit('player.land', { level: Math.min(.9, -landingVelocity * .12) });
+      }
+      if (player.grounded && player.dashT <= 0) {
+        stepDistance += Math.hypot(player.pos.x - oldX, player.pos.z - oldZ);
+        var stride = sprint ? 2.35 : 1.82;
+        if (stepDistance >= stride) {
+          stepDistance -= stride;
+          events.emit('player.step', { metal: player.pos.y - EYE > 0.25, level: sprint ? 0.38 : 0.23 });
+        }
+      }
+      landingKick *= Math.exp(-dt * 12);
+      aimIdle -= dt;
+      lookStress = Math.max(0, lookStress - dt);
+      var motion = settings.reducedMotion ? 0 : settings.shake;
 
       player.bob += dt * (moving ? (sprint ? 12 : 8.5) : 2.2);
       var bobY = Math.sin(player.bob) * (moving ? 0.045 : 0.008);
       var bobX = Math.cos(player.bob * 0.5) * (moving ? 0.018 : 0.004);
 
       player.shake = Math.max(0, player.shake - dt * 2.0);
-      var shx = (Math.random() * 2 - 1) * player.shake * 0.055;
-      var shy = (Math.random() * 2 - 1) * player.shake * 0.055;
+      var shx = (visualRandom() * 2 - 1) * player.shake * 0.045;
+      var shy = (visualRandom() * 2 - 1) * player.shake * 0.045;
 
-      camera.position.set(player.pos.x + bobX * 0.3 + shx, player.pos.y + bobY + shy, player.pos.z);
+      camera.position.set(player.pos.x + (bobX * 0.3 + shx) * motion,
+        player.pos.y + (bobY + shy - landingKick) * motion, player.pos.z);
       tmpEuler.set(player.pitch, player.yaw, 0, 'YXZ');
       camera.quaternion.setFromEuler(tmpEuler);
 
-      var targetFov = 74 + (sprint && moving ? 3.5 : 0) + (player.dashT > 0 ? 6 : 0);
-      camera.fov = lerp(camera.fov, targetFov, 1 - Math.exp(-dt * 9));
+      var targetFov = settings.fov + (settings.reducedMotion ? 0 :
+        (sprint && moving ? 4.5 : 0) + (player.dashT > 0 ? 6 : 0));
+      cameraFov = lerp(cameraFov, targetFov, 1 - Math.exp(-dt * 9));
+      camera.fov = cameraFov;
       camera.updateProjectionMatrix();
+      cinematics.update(dt, player.yaw, player.pitch, true, cameraFov, aimIdle > 0 || input.fireHeld);
 
-      var sway = Math.sin(player.bob * 0.5) * (moving ? 0.012 : 0.003);
+      var sway = Math.sin(player.bob * 0.5) * (moving ? 0.012 : 0.003) * motion;
       viewRoot.position.set(
         0.33 + sway,
-        -0.27 + Math.abs(Math.sin(player.bob)) * (moving ? 0.01 : 0.0025) - player.recoil * 0.012,
+        -0.27 + Math.abs(Math.sin(player.bob)) * (moving ? 0.01 : 0.0025) * motion - player.recoil * 0.012,
         -0.66 + player.recoil * 0.055
       );
-      viewRoot.rotation.set(player.recoil * 0.16, sway * 0.7, 0);
+      sprintPose = lerp(sprintPose, (sprint && moving && !input.fireHeld) ? 1 : 0, 1 - Math.exp(-dt * 10));
+      var pose = sprintPose * (settings.reducedMotion ? 0.28 : 1);
+      viewRoot.position.y -= pose * 0.077 + landingKick * motion * 0.75;
+      viewRoot.position.x += pose * 0.054;
+      viewRoot.rotation.set(player.recoil * 0.16 - pose * 0.24, sway * 0.7 + pose * 0.18, pose * -0.20);
+      inspection = Math.max(0, inspection - dt);
+      if (inspection > 0 && !settings.reducedMotion) {
+        var inspectPose = Math.sin(Math.PI * inspection / 1.6) ** 2;
+        viewRoot.position.x -= 0.13 * inspectPose;
+        viewRoot.rotation.y += 0.58 * inspectPose;
+        viewRoot.rotation.x -= 0.24 * inspectPose;
+      }
 
       if (player.hp < player.maxHp && gameTime - player.lastHit > 6.5) {
         player.hp = Math.min(player.maxHp, player.hp + 4.5 * dt);
@@ -7810,6 +8165,7 @@
         fx: fx,
         trail: acquireBulletTrail(color, radius * 1.7),
         pos: pos.clone(),
+        source: pos.clone(),
         vel: dir.clone().normalize().multiplyScalar(speed),
         speed: speed,
         dmg: dmg,
@@ -7858,7 +8214,10 @@
         b.pos.addScaledVector(b.vel, dt);
         var pulse = 0.5 + 0.5 * Math.sin(gameTime * 18 + b.fx.phase);
         b.fx.group.position.copy(b.pos);
-        b.fx.core.scale.setScalar(b.radius * (1.0 + pulse * 0.14));
+        var width = b.radius * (1.0 + pulse * 0.14);
+        b.fx.core.scale.set(width, width, width * 3.6);
+        fxTmpDir.copy(b.vel).normalize();
+        if (fxTmpDir.lengthSq() > 0) b.fx.group.quaternion.setFromUnitVectors(ZAXIS, fxTmpDir);
         b.fx.halo.scale.setScalar(b.radius * (2.2 + pulse * 0.55));
         b.fx.haloMat.opacity = 0.18 + pulse * 0.18;
 
@@ -7895,7 +8254,7 @@
           continue;
         }
         if (b.pos.distanceTo(player.pos) < b.radius + 0.42) {
-          if (player.invuln <= 0 && player.dashT <= 0) damagePlayer(b.dmg);
+          if (player.invuln <= 0 && player.dashT <= 0) damagePlayer(b.dmg, b.source);
           spawnParticles(b.pos, b.color, 4, 3, 0.3, 0.04);
           spawnSparks(b.pos, b.color, 6, 4.2, 1.2);
           spawnRingFx(b.pos, 0.8, b.color, 0.2, b.pos.y);
@@ -7935,7 +8294,7 @@
         d.fx.halo.scale.setScalar(0.24 + pulse * 0.09);
         d.fx.haloMat.opacity = 0.2 + pulse * 0.16;
 
-        if (Math.random() < 0.4) spawnParticles(d.pos, C.cyan, 1, 0.6, 0.18, 0.025);
+        if (visualRandom() < 0.4) spawnParticles(d.pos, C.cyan, 1, 0.6, 0.18, 0.025);
 
         var hit = false;
         for (var e = 0; e < enemies.length; e++) {
@@ -8041,7 +8400,7 @@
           continue;
         }
         if (m.pos.distanceTo(player.pos) < 0.65) {
-          damagePlayer(m.dmg);
+          damagePlayer(m.dmg, m.pos);
           killMissileAt(i);
         }
       }
@@ -8051,6 +8410,8 @@
 
     function buildSentinelMesh() {
       var group = new THREE.Group();
+      var sensor = new THREE.Group();
+      group.add(sensor);
       var shellMat = matLambert(0x18243a, { emissive: 0x091524 });
       tuneSurface(shellMat, 0.9, 0.72, 0.28);
       tuneTexture(shellMat, DETAIL_TILE.metal, 0.8, 0.65);
@@ -8065,16 +8426,22 @@
       glow.scale.setScalar(0.62);
       group.add(glow);
 
-      if (highVisuals) {
-        var hull = modelPart(group, HULL.shield, IM.craneIvory, 0, 0.014, 0, 0.72, 0.47, 0.94);
+      {
+        var hull = modelPart(group, MODELS.sentinel, IM.craneIvory, 0, 0.055, -0.07, 0.87, 0.53, 1.16);
         hull.castShadow = true;
         modelPart(group, HULL.housing, shellMat, 0, -0.12, 0.056, 0.67, 0.34, 0.89);
-        modelPart(group, HULL.cowl, IM.black, 0, 0.024, 0.416, 0.51, 0.24, 0.24);
-        modelPart(group, G.box, coreMat, 0, 0.024, 0.538, 0.31, 0.063, 0.027);
-        var retina = matBasic(0xffd9f2, { radiance: 3.75 });
-        modelPart(group, G.box, retina, 0, 0.024, 0.553, 0.174, 0.027, 0.018);
+        modelPart(sensor, HULL.cowl, IM.black, 0, 0.024, 0.416, 0.51, 0.24, 0.24);
+        modelPart(sensor, MODELS.turret, IM.steelDeep, 0, 0.033, 0.456, 0.56, 0.265, 0.24);
+        modelPart(sensor, MODELS.lens, coreMat, 0, 0.024, 0.558, 0.177, 0.074, 0.031);
+        var retina = matBasic(0xffd9f2, { radiance: 2.0 });
+        modelPart(sensor, MODELS.optic, IM.casting, 0, 0.027, 0.537, 0.168, 0.082, 0.079);
+        modelPart(sensor, MODELS.lens, retina, 0, 0.027, 0.574, 0.107, 0.034, 0.013);
+        for (var mountSide of [-1, 1]) {
+          modelPart(group, MODELS.joint, IM.casting, mountSide * 0.448, -0.11, -0.23,
+            0.144, 0.145, 0.28, Math.PI / 2);
+        }
         for (var nacelle = -1; nacelle <= 1; nacelle += 2) {
-          var wing = modelPart(group, HULL.cowl, IM.steel, nacelle * 0.44, -0.085, -0.028,
+          var wing = modelPart(group, MODELS.sentinel, IM.steel, nacelle * 0.51, -0.085, -0.10,
             0.33, 0.23, 0.67, nacelle * 0.17, nacelle * 0.19);
           wing.castShadow = true;
           modelPart(group, HULL.cowl, IM.craneIvory, nacelle * 0.54, 0.036, -0.07,
@@ -8083,25 +8450,38 @@
           modelPart(group, HULL.housing, IM.railPaint, nacelle * 0.436, -0.18, 0.15, 0.129, 0.12, 0.28);
           var rotor = modelPart(group, G.torus, IM.casting, nacelle * 0.40, -0.185, -0.045, 0.16, 0.16, 0.16);
           rotor.rotation.x = Math.PI / 2;
-        }
-      } else {
-        var core = new THREE.Mesh(G.sphere, coreMat);
-        core.scale.setScalar(0.34);
-        group.add(core);
-        modelPart(group, G.box, matBasic(0xffd9f2), 0, 0, 0.34, 0.16, 0.06, 0.05);
-        for (var s = -1; s <= 1; s += 2) {
-          modelPart(group, G.box, shellMat, s * 0.44, 0.02, 0, 0.46, 0.14, 0.62, 0, s * 0.42);
-          modelPart(group, G.box, shellMat, s * 0.58, 0.18, -0.1, 0.2, 0.06, 0.3, 0, s * 0.60);
+          modelPart(group, MODELS.turret, shellMat, nacelle * 0.64, -0.043, -0.13,
+            0.16, 0.18, 0.73, nacelle * -0.22, nacelle * 0.17);
         }
       }
+
+      var detail = new THREE.Group();
+      for (var child of group.children.slice()) if (child !== glow) detail.add(child);
+      group.add(detail);
+      var low = new THREE.Group();
+      var outline = modelPart(low, HULL.housing, shellMat, 0, 0.035, -0.05, 1.19, 0.45, 0.94);
+      outline.castShadow = true;
+      modelPart(low, G.box, coreMat, 0, 0.027, 0.45, 0.32, 0.095, 0.06);
+      for (var side of [-1, 1]) modelPart(low, HULL.cowl, IM.craneIvory, side * 0.49, 0.04, -0.13, .36, .21, .65);
+      low.visible = false;
+      group.add(low);
 
       var ring = new THREE.Mesh(G.torus, ringMat);
       ring.rotation.x = 0.42;
       ring.scale.set(0.66, 0.66, 0.66);
       group.add(ring);
+      var vents = new THREE.Group();
+      for (var sign of [-1, 1]) {
+        modelPart(vents, G.box, IM.lampWarm, sign * .51, -.13, -.32, .06, .036, .24);
+        modelPart(vents, G.lowSphere, coreMat, sign * .5, -.14, -.51, .095, .06, .10);
+      }
+      detail.add(vents);
+      var warning = actorWarning(group, .82, 0xffc861);
 
       return {
-        group: group,
+        group: group, detail: detail, low: low, vents: vents, warning: warning,
+        sensor: sensor,
+        armor: shellMat,
         coreMat: coreMat,
         ringMat: ringMat,
         ring: ring,
@@ -8128,27 +8508,26 @@
       group.add(aura);
 
       var head = new THREE.Group();
-      if (highVisuals) {
+      var barrels = new THREE.Group();
+      head.add(barrels);
+      {
         var pedestal = modelPart(group, G.cylinder, IM.steelDark, 0, -0.42, -0.2, 0.49, 0.29, 0.49);
         pedestal.castShadow = true;
+        modelPart(group, MODELS.tube, IM.casting, 0, -0.306, -0.20, 0.51, 0.072, 0.51);
+        modelPart(group, MODELS.turret, IM.steelDeep, 0, -0.16, -0.21, 0.88, 0.31, 0.83);
         modelPart(group, HULL.shield, mountMat, 0, -0.085, -0.28, 0.87, 0.63, 0.64);
-        var headArmor = modelPart(head, HULL.cowl, IM.cranePaint, 0, 0.105, 0.026, 1.02, 0.50, 0.75);
+        var headArmor = modelPart(head, MODELS.turret, IM.cranePaint, 0, 0.125, -0.01, 1.15, 0.57, 0.94);
         headArmor.castShadow = true;
         modelPart(head, HULL.housing, IM.steelDeep, 0, -0.075, 0.164, 0.86, 0.29, 0.57);
         modelPart(head, G.box, glowMat, 0, 0.16, 0.382, 0.34, 0.062, 0.045);
         for (var cannon = -1; cannon <= 1; cannon += 2) {
-          var tube = modelPart(head, G.cylinder, IM.casting, cannon * 0.235, -0.025, 0.58, 0.112, 0.68, 0.112);
+          var tube = modelPart(barrels, G.cylinder, IM.casting, cannon * 0.235, -0.025, 0.58, 0.112, 0.68, 0.112);
           tube.rotation.x = Math.PI / 2;
-          modelPart(head, HULL.housing, IM.steelDark, cannon * 0.235, -0.025, 0.855, 0.24, 0.23, 0.24);
-          var muzzleLip = modelPart(head, G.torus, IM.casting, cannon * 0.235, -0.025, 0.976, 0.072, 0.072, 0.072);
+          modelPart(barrels, HULL.housing, IM.steelDark, cannon * 0.235, -0.025, 0.855, 0.24, 0.23, 0.24);
+          var muzzleLip = modelPart(barrels, G.torus, IM.casting, cannon * 0.235, -0.025, 0.976, 0.072, 0.072, 0.072);
           muzzleLip.rotation.x = Math.PI / 2;
-          modelPart(head, G.box, glowMat, cannon * 0.235, -0.025, 0.975, 0.09, 0.069, 0.013);
+          modelPart(barrels, G.box, glowMat, cannon * 0.235, -0.025, 0.975, 0.09, 0.069, 0.013);
         }
-      } else {
-        modelPart(group, G.box, mountMat, 0, 0, -0.32, 0.9, 0.9, 0.36);
-        modelPart(head, G.box, mountMat, 0, 0, 0, 0.62, 0.4, 0.5);
-        modelPart(head, G.box, matBasic(0x9db4ca), 0, 0, 0.5, 0.14, 0.14, 0.8);
-        modelPart(head, G.box, glowMat, 0, 0, 0.92, 0.2, 0.2, 0.08);
       }
       var halo = new THREE.Mesh(G.torus, glowMat);
       halo.rotation.x = Math.PI / 2;
@@ -8156,15 +8535,40 @@
       halo.position.set(0, -0.24, 0.05);
       head.add(halo);
       group.add(head);
-
+      var detail = new THREE.Group();
+      for (var child of group.children.slice()) if (child !== aura) detail.add(child);
+      group.add(detail);
+      var low = new THREE.Group();
+      modelPart(low, HULL.shield, mountMat, 0, -.21, -.13, .96, .62, .72);
+      var lowHead = new THREE.Group();
+      modelPart(lowHead, HULL.cowl, IM.cranePaint, 0, .12, 0, .98, .46, .83);
+      modelPart(lowHead, G.box, glowMat, 0, .16, .45, .38, .058, .07);
+      modelPart(lowHead, G.box, IM.casting, 0, 0, .58, .38, .15, .64);
+      low.add(lowHead);
+      low.visible = false;
+      group.add(low);
+      var warning = actorWarning(group, 1.04, C.amber);
       return {
-        group: group,
+        group: group, detail: detail, low: low, lowHead: lowHead, warning: warning,
         head: head,
+        barrels: barrels,
+        armor: mountMat,
         coreMat: glowMat,
         auraMat: auraMat,
         aura: aura,
         auraBase: { x: 0.9, y: 0.62, z: 0.82 }
       };
+    }
+
+    function actorWarning(group, height, hex) {
+      var mat = matBasic(hex, { radiance: 1.65, transparent: true, depthWrite: false, blending: 'additive' });
+      var mesh = new THREE.Mesh(G.torus, mat);
+      mesh.position.set(0, height, 0.14);
+      mesh.scale.setScalar(0.25);
+      mesh.rotation.z = Math.PI / 4;
+      mesh.visible = false;
+      group.add(mesh);
+      return mesh;
     }
 
     function makeSentinelEntity(built) {
@@ -8174,6 +8578,13 @@
         active: false,
         type: 'sentinel',
         group: built.group,
+        detail: built.detail,
+        low: built.low,
+        warning: built.warning,
+        ai: PBEnemyDirector.createActor(),
+        vents: built.vents,
+        sensor: built.sensor,
+        armor: built.armor,
         coreMat: built.coreMat,
         ringMat: built.ringMat,
         ring: built.ring,
@@ -8202,7 +8613,14 @@
         active: false,
         type: 'turret',
         group: built.group,
+        detail: built.detail,
+        low: built.low,
+        warning: built.warning,
+        ai: PBEnemyDirector.createActor(),
+        lowHead: built.lowHead,
         head: built.head,
+        barrels: built.barrels,
+        armor: built.armor,
         coreMat: built.coreMat,
         ringMat: built.coreMat,
         ring: null,
@@ -8256,8 +8674,10 @@
       e.active = true;
       e.dead = false;
       e.pos.set(x, 1.55, z);
+      resolveCircle(e.pos, e.radius);
+      resetActor(e);
       e.hp = e.maxHp;
-      e.speed = 3.1;
+      e.speed = PBMission.enemies.sentinel.speed;
       e.fireCd = rnd(1.2, 2.4);
       e.bobPhase = rnd(0, Math.PI * 2);
       e.slow = 0;
@@ -8289,6 +8709,7 @@
       e.active = true;
       e.dead = false;
       e.pos.set(x, y === undefined ? 2.15 : y, z);
+      resetActor(e);
       e.hp = e.maxHp;
       e.fireCd = rnd(1.2, 2.0);
       e.burst = 0;
@@ -8315,6 +8736,8 @@
       if (!e || e.dead) return;
       e.hp -= dmg;
       e.flash = 0.09;
+      enemyDirector.alert(e, true);
+      events.emit('enemy.hit', { type: e.type, hp: Math.max(0, e.hp), point: point || e.pos });
       spawnParticles(point || e.pos, color || C.cyan, 4, 3.2, 0.28, 0.045);
       if (e.hp <= 0) killEnemy(e);
     }
@@ -8325,12 +8748,42 @@
       kills++;
       spawnParticles(e.pos, e.type === 'turret' ? C.amber : C.magenta, 22, 7.5, 0.55, 0.07);
       spawnRingFx(e.pos, 2.6, e.type === 'turret' ? C.amber : C.magenta, 0.45, Math.max(0.1, e.pos.y - 0.5));
-      releaseEnemySlot(e);
+      e.ai.death = e.type === 'turret' ? 0.84 : 0.71;
+      e.warning.visible = false;
+      releaseContactShadow(e.shadow);
+      e.shadow = null;
+      events.emit('enemy.destroy', { type: e.type, point: e.pos });
       var idx = enemies.indexOf(e);
       if (idx >= 0) enemies.splice(idx, 1);
       registerHit(true);
       player.shake = Math.max(player.shake, 0.14);
-      if (Math.random() < 0.3) addToast('宿主清除 // +1', 'good');
+    }
+
+    function resetActor(e) {
+      PBEnemyDirector.reset(e.ai, e.pos.x, e.pos.z, e.pos.x < 0 ? -1 : 1);
+      e.group.scale.setScalar(0.72);
+      e.detail.visible = true;
+      e.low.visible = false;
+      e.warning.visible = false;
+    }
+
+    function updateWrecks(pool, dt) {
+      for (var enemy of pool) {
+        if (!enemy.active || !enemy.dead) continue;
+        var actor = enemy.ai;
+        actor.death -= dt;
+        PBEnemyDirector.transition(actor, 'dead', dt);
+        if (actor.death <= 0) {
+          releaseEnemySlot(enemy);
+          continue;
+        }
+        enemy.group.rotation.z += dt * (enemy.type === 'sentinel' ? 1.8 : 0.64);
+        if (enemy.type === 'sentinel') enemy.group.position.y -= dt * (1.15 + (1 - actor.death) * 1.3);
+        if (actor.age > 0.29 && actor.age - dt < 0.29) {
+          spawnParticles(enemy.group.position, 0xffbf6d, 8, 4, .36, .045, 'fragment');
+        }
+        enemy.coreMat.color.setHex(actor.death > 0.36 ? 0xd67458 : 0x301820);
+      }
     }
 
     function clearEnemies() {
@@ -8347,80 +8800,82 @@
       enemies.length = 0;
     }
 
+    var enemyOrigin = new THREE.Vector3();
+    var enemyShot = new THREE.Vector3();
+
+    function shootEnemy(e, spec, turret) {
+      enemyOrigin.set(e.pos.x, e.pos.y + (turret ? 0 : 0.08), e.pos.z);
+      enemyShot.copy(player.pos).sub(enemyOrigin);
+      enemyShot.y -= turret ? 0.10 : 0.08;
+      enemyShot.normalize();
+      var spread = turret ? 0.03 : 0.022;
+      enemyShot.x += rnd(-spread, spread);
+      if (!turret) enemyShot.y += rnd(-0.018, 0.018);
+      enemyShot.z += rnd(-spread, spread);
+      var hue = turret ? C.amber : C.magenta;
+      spawnBullet(enemyOrigin, enemyShot.normalize(), turret ? 13 : 10.5, spec.damage, hue, turret ? 0.16 : 0.19, 0);
+      spawnParticles(enemyOrigin, hue, turret ? 2 : 3, turret ? 2 : 2.4, 0.22, 0.04);
+      events.emit('enemy.attack', { point: enemyOrigin, turret: turret });
+    }
+
     function updateSentinel(e, dt, slowF) {
+      var initialRange = Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z);
+      enemyDirector.sense(e, player.pos, enemies, initialRange, dt);
+      var movement = enemyDirector.move(e, player.pos, enemies, gameTime, slowF, dt);
       var dx = player.pos.x - e.pos.x;
       var dz = player.pos.z - e.pos.z;
-      var range = Math.sqrt(dx * dx + dz * dz) || 1;
-      dx /= range;
-      dz /= range;
+      var range = Math.hypot(dx, dz) || 1;
+      var ai = e.ai;
+      var angle = ai.alert ? Math.atan2(dx, dz) : Math.atan2(ai.vx, ai.vz);
+      e.group.rotation.y += angleWrap(angle - e.group.rotation.y) * (1 - Math.exp(-dt * 12));
+      PBCombatVisuals.trackSensor(e.sensor, player.pos.y - e.pos.y, range);
 
-      var radial = range > 11.5 ? 1 : (range < 6.5 ? -1 : 0);
-      var strafe = Math.sin(gameTime * 0.9 + e.bobPhase) * 0.95;
-      var vx = (dx * radial - dz * strafe) * e.speed * slowF;
-      var vz = (dz * radial + dx * strafe) * e.speed * slowF;
-
-      e.pos.x += vx * dt;
-      e.pos.z += vz * dt;
-      resolveCircle(e.pos, e.radius);
-
-      e.group.rotation.y = Math.atan2(dx, dz);
-
-      e.fireCd -= dt * slowF;
-      if (e.fireCd <= 0 && range < 30) {
-        var from = new THREE.Vector3(e.pos.x, e.pos.y + 0.08, e.pos.z);
-        if (hasLineOfSight(from, player.pos)) {
-          e.fireCd = rnd(1.7, 2.5);
-          var dir = new THREE.Vector3(
-            player.pos.x - from.x,
-            player.pos.y - 0.08 - from.y,
-            player.pos.z - from.z
-          ).normalize();
-          dir.x += rnd(-0.022, 0.022);
-          dir.y += rnd(-0.018, 0.018);
-          dir.z += rnd(-0.022, 0.022);
-          spawnBullet(from, dir.normalize(), 10.5, 8, C.magenta, 0.19, 0);
-          spawnParticles(from, C.magenta, 3, 2.4, 0.22, 0.04);
-        } else {
-          e.fireCd = 0.55;
-        }
+      var spec = PBMission.enemies.sentinel;
+      if (enemyDirector.fireReady(e, range, slowF, dt)) {
+        e.fireCd = rnd(spec.fireMin, spec.fireMax);
+        shootEnemy(e, spec, false);
       }
+      var state = e.flash > 0 ? 'hit' : ai.charge > 0 ? 'charge' : ai.attack > 0 ? 'attack' : movement;
+      PBEnemyDirector.transition(ai, state, dt);
+      e.group.rotation.z = ai.lean * (ai.vx - Math.sin(e.bobPhase) * 0.35);
+      e.group.rotation.x = -ai.lean * (ai.vz * .42 + .1);
+      e.vents.visible = e.hp < e.maxHp * .48;
+      e.vents.scale.y = .84 + .16 * Math.sin(gameTime * 12 + e.bobPhase);
     }
 
     function updateTurret(e, dt, slowF) {
       var dx = player.pos.x - e.pos.x;
       var dz = player.pos.z - e.pos.z;
-      var range = Math.sqrt(dx * dx + dz * dz) || 1;
-      e.head.rotation.y = Math.atan2(dx, dz);
+      var range = Math.hypot(dx, dz) || 1;
+      var spec = PBMission.enemies.turret;
+      var ai = e.ai;
+      enemyDirector.sense(e, player.pos, enemies, range, dt);
+      var angle = ai.alert ? Math.atan2(dx, dz) : Math.sin(gameTime * .69 + e.bobPhase) * .7;
+      e.head.rotation.y += angleWrap(angle - e.head.rotation.y) * (1 - Math.exp(-dt * 15));
+      e.lowHead.rotation.y = e.head.rotation.y;
+      PBCombatVisuals.trackSensor(e.barrels, player.pos.y - e.pos.y, range);
+      e.barrels.position.z *= Math.exp(-dt * 20);
 
+      if (e.burst === 0 && enemyDirector.fireReady(e, range, slowF, dt)) {
+        e.burst = spec.burst;
+        e.burstT = 0;
+        e.fireCd = rnd(spec.fireMin, spec.fireMax);
+      }
       if (e.burst > 0) {
         e.burstT -= dt * slowF;
         if (e.burstT <= 0) {
           e.burstT = 0.14;
           e.burst--;
-          var from = new THREE.Vector3(e.pos.x, e.pos.y, e.pos.z);
-          var dir = new THREE.Vector3(
-            player.pos.x - from.x,
-            player.pos.y - 0.1 - from.y,
-            player.pos.z - from.z
-          ).normalize();
-          dir.x += rnd(-0.03, 0.03);
-          dir.z += rnd(-0.03, 0.03);
-          spawnBullet(from, dir.normalize(), 13, 7, C.amber, 0.16, 0);
-          spawnParticles(from, C.amber, 2, 2, 0.2, 0.035);
-        }
-      } else {
-        e.fireCd -= dt * slowF;
-        if (e.fireCd <= 0 && range < 36) {
-          var from2 = new THREE.Vector3(e.pos.x, e.pos.y, e.pos.z);
-          if (hasLineOfSight(from2, player.pos)) {
-            e.burst = 3;
-            e.burstT = 0;
-            e.fireCd = 2.7 + Math.random() * 0.9;
-          } else {
-            e.fireCd = 0.8;
-          }
+          e.barrels.position.z = -0.09;
+          ai.attack = 0.35;
+          shootEnemy(e, spec, true);
         }
       }
+      var state = e.flash > 0 ? 'hit' : e.slow > 0 ? 'stagger' : ai.charge > 0 ? 'charge' :
+        ai.attack > 0 ? 'attack' : ai.alert ? 'alert' : 'idle';
+      PBEnemyDirector.transition(ai, state, dt);
+      e.head.rotation.z = Math.sin(gameTime * 41) * ai.lean * 0.16;
+      e.coreMat.radiance = 1.18 + ai.energy * 1.62 + (e.hp < e.maxHp * .36 ? 0.35 * Math.sin(gameTime * 19) : 0);
     }
 
     function updateEnemies(dt) {
@@ -8432,7 +8887,17 @@
           continue;
         }
 
+        var ai = e.ai;
+        ai.spawn = Math.max(0, ai.spawn - dt);
+        ai.attack = Math.max(0, ai.attack - dt);
+        var distance = dist2D(e.pos, player.pos);
+        ai.far = distance > (ai.far ? 29 : 34);
+        e.detail.visible = !ai.far;
+        e.low.visible = ai.far;
+        e.group.scale.setScalar(1 - .28 * (ai.spawn / .38) ** 2);
         e.flash = Math.max(0, e.flash - dt);
+        var wear = Math.max(0, 1 - e.hp / e.maxHp);
+        PBCombatVisuals.updateArmor(e.armor, e.flash * 5 + Math.max(0, wear - 0.5) * 0.7, wear);
         e.slow = Math.max(0, e.slow - dt);
         var slowF = e.slow > 0 ? 0.42 : 1;
 
@@ -8465,6 +8930,13 @@
 
         if (e.type === 'sentinel') updateSentinel(e, dt, slowF);
         else updateTurret(e, dt, slowF);
+
+        e.warning.visible = ai.charge > 0;
+        if (e.warning.visible) {
+          var charge = 1 - ai.charge / PBMission.enemies[e.type].charge;
+          e.warning.material.opacity = 0.32 + charge * 0.60;
+          e.warning.scale.setScalar(0.22 + charge * 0.18);
+        }
 
         if (e.knock.lengthSq() > 0.001) {
           e.pos.x += e.knock.x * dt;
@@ -8511,11 +8983,11 @@
 
       var eyeMat = matBasic(0xffe3f4, { radiance: 3.5 });
       if (highVisuals) {
-        var lensSeat = modelPart(group, HULL.housing, IM.steelDark, 0, 0.04, 0.82, 0.82, 0.52, 0.26);
+        var lensSeat = modelPart(group, MODELS.boss, IM.steelDark, 0, 0.04, 0.82, 0.82, 0.52, 0.26);
         lensSeat.castShadow = true;
         var lensRing = modelPart(group, G.torus, IM.casting, 0, 0.04, 0.97, 0.22, 0.19, 0.22);
         lensRing.rotation.x = Math.PI / 2;
-        modelPart(group, G.lowSphere, eyeMat, 0, 0.04, 0.995, 0.19, 0.16, 0.10);
+        modelPart(group, MODELS.lens, eyeMat, 0, 0.04, 0.995, 0.19, 0.16, 0.10);
         for (var optic = -1; optic <= 1; optic += 2) {
           modelPart(group, HULL.cowl, IM.craneIvory, optic * 0.42, 0.19, 0.73,
             0.36, 0.29, 0.31, optic * 0.56, optic * 0.22);
@@ -8525,8 +8997,7 @@
         modelPart(group, G.lowSphere, eyeMat, 0, 0, 0.74, 0.34, 0.34, 0.34);
       }
 
-      var plateGeo = highVisuals ? HULL.shield : new THREE.BoxGeometry(1.8, 0.5, 0.82);
-      if (!highVisuals) plateGeo._owned = true;
+      var plateGeo = MODELS.boss;
       var plateMat = matLambert(highVisuals ? 0x435769 : 0x1c2940, {
         emissive: 0x0b1424, specular: 0.55, roughness: 0.3
       });
@@ -8535,7 +9006,7 @@
       var plates = [];
       for (var i = 0; i < 3; i++) {
         var angle = i * Math.PI * 2 / 3;
-        var plate = highVisuals ? new THREE.Group() : new THREE.Mesh(plateGeo, plateMat);
+        var plate = new THREE.Group();
         plate.position.set(Math.cos(angle) * 1.15, 0, Math.sin(angle) * 1.15);
         plate.rotation.y = -angle + Math.PI / 2;
         group.add(plate);
@@ -8575,67 +9046,36 @@
       });
       tuneTexture(bossVentMat, DETAIL_TILE.chips, 1.1, 0.45);
       var pi;
+      var hotMetal = matBasic(0xff764c, { radiance: 2.0 });
+      var condenser = matBasic(0x7de1ee, { radiance: 1.65 });
       for (pi = 0; pi < plates.length; pi++) {
-        if (highVisuals) {
-          var mount = plates[pi].mesh;
-          var shieldShell = modelPart(mount, plateGeo, plateMat, 0, 0, 0, 1.84, 0.72, 0.74);
-          shieldShell.castShadow = true;
-          modelPart(mount, HULL.cowl, bossTrimMat, 0, 0.243, 0.145, 1.79, 0.30, 0.61);
-          modelPart(mount, HULL.housing, bossVentMat, 0, -0.014, 0.378, 1.47, 0.32, 0.073);
-          modelPart(mount, G.box, coreMat, 0, 0.036, 0.428, 1.26, 0.041, 0.026);
-          for (var tooth = -1; tooth <= 1; tooth += 2) {
-            modelPart(mount, HULL.shield, bossTrimMat, tooth * 0.52, 0.39, -0.026,
-              0.42, 0.50, 0.64, tooth * 0.15, tooth * -0.36);
-            modelPart(mount, HULL.cowl, plateMat, tooth * 0.53, -0.32, 0.012,
-              0.45, 0.46, 0.59, tooth * 0.13, tooth * 0.30);
-            modelPart(mount, G.box, IM.railPaint, tooth * 0.52, -0.285, 0.309, 0.21, 0.055, 0.023, 0, tooth * 0.30);
-          }
-          for (var slot = -2; slot <= 2; slot++) {
-            modelPart(mount, G.box, bossTrimMat, slot * 0.236, -0.093, 0.421,
-              0.088, 0.073, 0.031, 0, -0.22);
-          }
-          continue;
+        var segment = plates[pi];
+        var mount = segment.mesh;
+        var shieldShell = modelPart(mount, plateGeo, plateMat, 0, 0, 0, 1.89, .79, .86);
+        shieldShell.castShadow = true;
+        modelPart(mount, MODELS.boss, bossTrimMat, 0, .245, .056, 1.49, .27, .79);
+        modelPart(mount, HULL.housing, bossVentMat, 0, -.014, .378, 1.47, .32, .073);
+        modelPart(mount, G.box, coreMat, 0, .036, .428, 1.26, .041, .026);
+        segment.piston = modelPart(mount, MODELS.tube, bossTrimMat, 0, -.34, -.20, .19, .42, .19);
+        segment.piston.rotation.x = Math.PI / 2;
+        segment.sink = new THREE.Group();
+        segment.sink.position.set(0, .31, .11);
+        mount.add(segment.sink);
+        segment.sink.detailDistance = 45;
+        for (var fin = -2; fin <= 2; fin++) {
+          modelPart(segment.sink, HULL.cowl, bossTrimMat, fin * .238, 0, 0, .14, .29, .64);
         }
-        var pa = plates[pi].angle;
-        var pcx = Math.cos(pa) * 1.15;
-        var pcz = Math.sin(pa) * 1.15;
-        var prot = -pa + Math.PI / 2;
-        var pnx = Math.cos(pa), pnz = Math.sin(pa);
-        var ptx = Math.sin(pa), ptz = -Math.cos(pa);
-        var faceX = pcx + pnx * 0.43;
-        var faceZ = pcz + pnz * 0.43;
-        var bi, bx, bz;
-        for (bi = -1; bi <= 1; bi += 2) {
-          var band = new THREE.Mesh(G.box, bossTrimMat);
-          band.position.set(faceX, bi * 0.165, faceZ);
-          band.rotation.y = prot;
-          band.scale.set(1.5, 0.045, 0.02);
-          group.add(band);
+        segment.fracture = new THREE.Group();
+        var shard = modelPart(segment.fracture, HULL.shield, plateMat, .57, -.30, .07, .52, .39, .58, .26, -.32);
+        shard.castShadow = true;
+        modelPart(segment.fracture, G.box, hotMetal, .37, -.245, .345, .13, .036, .018, 0, -.89);
+        modelPart(segment.fracture, G.box, hotMetal, .31, -.18, .345, .08, .022, .016, 0, .39);
+        mount.add(segment.fracture);
+        segment.emitter = modelPart(mount, MODELS.optic, condenser, 0, -.21, .48, .26, .12, .11);
+        for (var latch of [-.65, .65]) {
+          var hinge = modelPart(mount, MODELS.joint, bossTrimMat, latch, -.205, .17, .17, .165, .53, .22);
+          hinge.detailDistance = 38;
         }
-        for (bi = -1; bi <= 1; bi++) {
-          bx = faceX + ptx * (bi * 0.62);
-          bz = faceZ + ptz * (bi * 0.62);
-          var bolt = new THREE.Mesh(G.box, bossTrimMat);
-          bolt.position.set(bx, 0.19, bz);
-          bolt.rotation.y = prot;
-          bolt.scale.set(0.07, 0.07, 0.03);
-          group.add(bolt);
-        }
-        var vent = new THREE.Mesh(G.box, bossVentMat);
-        vent.position.set(faceX, -0.06, faceZ);
-        vent.rotation.y = prot;
-        vent.scale.set(0.46, 0.15, 0.02);
-        group.add(vent);
-        var slit = new THREE.Mesh(G.box, coreMat);
-        slit.position.set(faceX, 0.02, faceZ);
-        slit.rotation.y = prot;
-        slit.scale.set(0.5, 0.025, 0.012);
-        group.add(slit);
-        var tab = new THREE.Mesh(G.box, IM.hazard);
-        tab.position.set(faceX + ptx * 0.52, -0.15, faceZ + ptz * 0.52);
-        tab.rotation.y = prot;
-        tab.scale.set(0.26, 0.065, 0.014);
-        group.add(tab);
       }
       for (pi = 0; pi < 6; pi++) {
         var ra = pi / 6 * Math.PI * 2;
@@ -8656,6 +9096,7 @@
         coreBand.scale.setScalar(1.01);
         group.add(coreBand);
       }
+      var ventPlumes = [];
       for (pi = 0; pi < 3; pi++) {
         var va = pi / 3 * Math.PI * 2 + 0.3;
         var exh = new THREE.Mesh(G.box, bossVentMat);
@@ -8663,6 +9104,12 @@
         exh.rotation.y = -va;
         exh.scale.set(0.3, 0.18, 0.2);
         group.add(exh);
+        var exhaust = volumeMaterial(0xd77b5d, 0);
+        exhaust.softVolume = true;
+        var plume = modelPart(group, G.lowSphere, exhaust,
+          Math.cos(va) * 0.78, -1.31, Math.sin(va) * 0.78, 0.22, 0.78, 0.22, va);
+        plume.visible = false;
+        ventPlumes.push(plume);
       }
 
       // Grounded phase light: two additive pools that follow the core while
@@ -8689,7 +9136,8 @@
         transparent: true, opacity: 0.1, blending: 'additive',
         depthWrite: false, fog: false
       });
-      var shield = new THREE.Mesh(G.sphere, shieldMat);
+      shieldMat.rimOpacity = 0.94;
+      var shield = new THREE.Mesh(MODELS.lens, shieldMat);
       shield.scale.setScalar(2.55);
       shieldGroup.add(shield);
       var shieldRingMat = matBasic(C.cyan, {
@@ -8713,6 +9161,7 @@
         plateMat: plateMat,
         bossTrimMat: bossTrimMat,
         bossVentMat: bossVentMat,
+        ventPlumes: ventPlumes,
         ring: ring,
         ring2: ring2,
         aura: aura,
@@ -8735,6 +9184,7 @@
       var built = buildBossMesh();
       built.group.visible = false;
       scene.add(built.group);
+      MATERIAL_LIBRARY.enemyArmor.push(built.plateMat, built.coreMat);
       bossPool = {
         active: false,
         group: built.group,
@@ -8745,6 +9195,7 @@
         plateMat: built.plateMat,
         bossTrimMat: built.bossTrimMat,
         bossVentMat: built.bossVentMat,
+        ventPlumes: built.ventPlumes,
         ring: built.ring,
         ring2: built.ring2,
         aura: built.aura,
@@ -8811,6 +9262,7 @@
       b.pos.set(0, 2.5, -34);
       b.anchor.set(0, 2.5, -34);
       b.group.position.copy(b.pos);
+      b.group.scale.setScalar(.72);
       b.group.quaternion.identity();
       b.group.visible = true;
       b.core.scale.setScalar(0.92);
@@ -8827,6 +9279,10 @@
         var plate = b.plates[p];
         plate.mesh.position.set(Math.cos(plate.angle) * 1.15, 0, Math.sin(plate.angle) * 1.15);
         plate.mesh.rotation.set(0, -plate.angle + Math.PI / 2, 0);
+        plate.sink.rotation.x = 0;
+        plate.fracture.rotation.z = 0;
+        plate.fracture.position.set(0, 0, 0);
+        plate.emitter.visible = false;
       }
       b.ring.rotation.set(0.42, 0, 0);
       b.ring2.rotation.set(1.3, 0, 0.5);
@@ -8841,6 +9297,8 @@
       b.auraCoreMat.color.setHex(0xff8fd6);
       b.auraCoreMat.opacity = 0.16;
       b.auraHex = 0;
+      b.floorGlow.visible = true;
+      b.floorCore.visible = true;
       b.floorGlow.position.set(0, -2.4, 0);
       b.floorGlowMat.color.setHex(0xff4fb8);
       b.floorGlowMat.opacity = 0.09;
@@ -8857,7 +9315,7 @@
       bossEverSpawned = true;
       bossDefeated = false;
       flow.bossActive = true;
-      setArenaPhase(1);
+      events.emit('boss.phaseChange', { phase: 1, point: b.pos });
       ui.bossBar.hidden = false;
       addToast('警告 // 零号守门者 GATEKEEPER ZERO 上线', 'boss');
       player.shake = Math.max(player.shake, 0.55);
@@ -8875,6 +9333,7 @@
       boss.flash = 0.09;
       spawnParticles(point || boss.pos, color || C.magenta, 4, 4, 0.3, 0.05);
 
+      if (boss.phase === 1 && boss.hp > 0 && boss.hp <= 150) boss.hp = 151;
       if (boss.hp <= 0) {
         // A large burst may cross a phase boundary but can never skip one.
         if (boss.phase < 3) {
@@ -8902,7 +9361,7 @@
       boss.shield = 0;
       boss.shieldCd = phase === 3 ? 6.0 : 5.0;
       boss.exposed = 0;
-      setArenaPhase(phase);
+      events.emit('boss.phaseChange', { phase: phase, point: boss.pos });
       spawnRingFx(boss.pos, 9, C.magenta, 0.8, 1.4);
       spawnRingFx(boss.pos, 6, C.violet, 0.6, 1.0);
       spawnParticles(boss.pos, C.magenta, 40, 12, 0.9, 0.09);
@@ -8910,6 +9369,7 @@
       player.shake = Math.max(player.shake, 0.5);
       if (phase === 3 && !boss.enraged) {
         boss.enraged = true;
+        events.emit('boss.enrage', { point: boss.pos });
         boss.summonCd = 12;
         if (boss.plateMat) {
           boss.plateMat.color.setHex(0x160307);
@@ -8920,7 +9380,6 @@
           boss.bossTrimMat.emissive.setHex(0x2a0404);
         }
         flashScreen(0xff2d2d, true);
-        addToast('ENRAGED // 守门者核心过载', 'boss');
         // One radial burst marks the transition, then never repeats.
         var burstOrigin = new THREE.Vector3(boss.pos.x, 1.25, boss.pos.z);
         for (var b = 0; b < 12; b++) {
@@ -8932,12 +9391,7 @@
         player.shake = Math.max(player.shake, 0.7);
         if (enemies.length < 3) summonSentinels(2);
       }
-      if (phase === 3) {
-        addToast('核心暴露窗口缩短 // 安全区收窄', 'warn');
-      } else {
-        flashScreen(0x9b6bff, true);
-        addToast('守门者进入第 ' + phase + ' 阶段', 'boss');
-      }
+      if (phase === 2) flashScreen(0x9b6bff, true);
     }
 
     function defeatBoss() {
@@ -8949,10 +9403,15 @@
       boss.action = null;
 
       var pos = boss.pos.clone();
+      scorch.position.set(pos.x, 0.074, pos.z);
+      scorch.visible = true;
+      spawnParticles(pos, 0x733a35, 20, 8, 0.92, 0.11);
       releaseContactShadow(boss.shadow);
       boss.shadow = null;
-      if (boss.group) boss.group.visible = false;
-      boss.active = false;
+      boss.shieldGroup.visible = false;
+      boss.deadT = 1.85;
+      bossWreck = boss;
+      events.emit('boss.defeat', { point: pos });
       boss = null;
 
       spawnParticles(pos, C.magenta, 60, 14, 1.1, 0.1);
@@ -8962,6 +9421,7 @@
 
       clearBullets();
       clearEnemies();
+      pending.length = 0;
       for (var mi = 0; mi < missiles.length; mi++) {
         releaseMissileFx(missiles[mi].fx);
       }
@@ -8985,8 +9445,7 @@
       flow.bossActive = false;
 
       exit.unlocked = true;
-      updateExitVisuals();
-      setArenaPhase(4);
+      events.emit('exit.unlock', { point: exit.pos });
       player.shake = 0.9;
       flashScreen(0xff4fb8, true);
       addToast('零号守门者解体 // 出口已解锁', 'good');
@@ -8996,12 +9455,49 @@
     function summonSentinels(count) {
       if (!boss) return;
       for (var i = 0; i < count; i++) {
-        var ang = i * Math.PI + Math.random() * 0.6;
+        var ang = i * Math.PI + gameplayRandom() * 0.6;
         var x = clamp(boss.pos.x + Math.cos(ang) * rnd(4.5, 7), BOSS_ARENA.minX + 1.5, BOSS_ARENA.maxX - 1.5);
         var z = clamp(boss.pos.z + Math.sin(ang) * rnd(4.5, 7), BOSS_ARENA.minZ + 1.5, BOSS_ARENA.maxZ - 1.5);
-        spawnSentinel(x, z);
+        spawnTelegraph(x, z, 1.04, .58, C.red);
+        queueWaveSpawn({ x: x, z: z, delay: .58 });
       }
-      addToast('守门者召唤增援 // ' + count + ' 个漂移哨兵', 'warn');
+      addToast('守门者增援 · 留意红色降落标记', 'warn');
+    }
+
+    function updateBossWreck(dt) {
+      if (!bossWreck) return;
+      var b = bossWreck;
+      var last = b.deadT;
+      b.deadT -= dt;
+      var age = 1.85 - b.deadT;
+      b.group.position.y = b.pos.y - Math.min(1.7, age * age * .9);
+      b.group.rotation.z = Math.min(.48, age * .28);
+      b.core.scale.setScalar(Math.max(.08, 1.1 - age * .55));
+      b.ring.rotation.y += dt * (1 + age * 2);
+      b.ring2.rotation.x -= dt * (1.5 + age);
+      b.shieldGroup.visible = false;
+      b.floorGlow.visible = false;
+      b.floorCore.visible = false;
+      for (var plate of b.plates) {
+        var radius = 2 + age * age * .92;
+        plate.mesh.position.set(Math.cos(plate.angle) * radius,
+          Math.sin(age * 2.4 + plate.angle) * age * .48, Math.sin(plate.angle) * radius);
+        plate.mesh.rotation.z += dt * (1.4 + plate.angle * .37);
+        plate.mesh.rotation.x += dt * .8;
+      }
+      if (last > 1.18 && b.deadT <= 1.18) {
+        spawnParticles(b.group.position, 0xff924c, 24, 7, .82, .085, 'fragment');
+      }
+      if (last > 0.62 && b.deadT <= 0.62) {
+        spawnRingFx(b.pos, 8.3, C.amber, .63, .11);
+        spawnParticles(b.group.position, 0x67616a, 11, 1.4, .93, .48, 'dust');
+        renderer.addWaterRipple(b.pos.x, b.pos.z, worldClock);
+      }
+      if (b.deadT <= 0) {
+        b.group.visible = false;
+        b.active = false;
+        bossWreck = null;
+      }
     }
 
     function bossAimDir() {
@@ -9018,9 +9514,11 @@
         t: 0,
         step: 0,
         points: [],
-        axis: Math.random() < 0.5 ? 'x' : 'z'
+        axis: gameplayRandom() < 0.5 ? 'x' : 'z'
       };
-      boss.actionCd = boss.phase === 3 ? 1.65 : (boss.phase === 2 ? 2.2 : 2.8);
+      boss.actionCd = PBMission.bossPhases[boss.phase].interval;
+      events.emit('boss.attack', { attack: type, point: boss.pos });
+      if (type === 'missiles' || type === 'shockwave') spawnRingFx(boss.pos, 3.6, C.red, .35, 0.12);
     }
 
     function endBossAction() {
@@ -9028,11 +9526,8 @@
     }
 
     function nextBossAction() {
-      var list;
       if (!boss) return 'volley';
-      if (boss.phase === 1) list = ['volley', 'strike', 'volley', 'strike'];
-      else if (boss.phase === 2) list = ['laser', 'volley', 'laser', 'strike'];
-      else list = ['missiles', 'shockwave', 'laser', 'expose', 'volley', 'shockwave'];
+      var list = PBMission.bossPhases[boss.phase].attacks;
       var type = list[boss.alt % list.length];
       boss.alt++;
       return type;
@@ -9083,7 +9578,7 @@
             spawnParticles(new THREE.Vector3(pt.x, 0.2, pt.z), C.amber, 18, 9, 0.55, 0.075);
             spawnRingFx(new THREE.Vector3(pt.x, 0, pt.z), 2.2, C.amber, 0.35, 0.06);
             if (Math.hypot(player.pos.x - pt.x, player.pos.z - pt.z) < 1.9) {
-              damagePlayer(16);
+              damagePlayer(16, boss.pos);
             }
           }
           player.shake = Math.max(player.shake, 0.35);
@@ -9117,7 +9612,6 @@
             spawnMissile(morigin, rotateYDir(mbase, off),
               boss.phase === 3 ? 9.5 : 8.2, 1.9, ttl, 14);
           }
-          addToast('追踪弹发射 // 可被击落', 'warn');
         }
         if (a.t >= 1.15) endBossAction();
         return;
@@ -9128,12 +9622,11 @@
           a.step = 1;
           var phase3 = boss.phase === 3;
           var gapHalf = phase3 ? 0.24 : 0.4;
-          var baseAng = Math.random() * Math.PI * 2;
+          var baseAng = gameplayRandom() * Math.PI * 2;
           a.baseAng = baseAng;
           var gaps = [];
           for (var g = 0; g < 3; g++) gaps.push(baseAng + g * Math.PI * 2 / 3);
           spawnShockwave(boss.pos, gaps, gapHalf, phase3 ? 12 : 9.5);
-          addToast('冲击波 // 站进缺口', 'danger');
         }
         if (a.step === 1 && boss.phase === 3 && a.t >= 0.7) {
           a.step = 2;
@@ -9153,7 +9646,7 @@
       if (a.type === 'expose') {
         if (a.step === 0) {
           a.step = 1;
-          boss.exposed = boss.phase === 3 ? 1.35 : 1.7;
+          boss.exposed = PBMission.bossPhases[boss.phase].exposure;
           addToast('核心暴露 // 伤害翻倍 ' + boss.exposed.toFixed(2) + 's', 'good');
         }
         if (a.t >= (boss.phase === 3 ? 1.55 : 1.95)) endBossAction();
@@ -9176,6 +9669,8 @@
         boss.shield -= dt;
         if (boss.shield <= 0) {
           boss.shield = 0;
+          boss.exposed = Math.max(boss.exposed, PBMission.bossPhases[boss.phase].exposure);
+          events.emit('boss.shield', { active: false, point: boss.pos });
           addToast('护盾过载 // 攻击窗口开启', 'good');
         }
       } else if (boss.phase >= 2 && boss.invuln <= 0) {
@@ -9183,18 +9678,16 @@
         if (boss.shieldCd <= 0) {
           boss.shield = 2.8;
           boss.shieldCd = rnd(8, 10);
+          events.emit('boss.shield', { active: true, point: boss.pos });
           addToast('环形护盾展开 // 等待过载', 'warn');
         }
       }
 
       boss.anchorT -= dt;
       if (boss.anchorT <= 0) {
-        boss.anchorT = boss.phase === 3 ? 1.85 : (boss.phase === 2 ? 2.9 : 3.4);
-        var anchors = [
-          [0, -34], [-13, -28.5], [13, -28.5],
-          [-13.5, -39.5], [13.5, -39.5], [0, -26.5]
-        ];
-        var pick = anchors[Math.floor(Math.random() * anchors.length)];
+        boss.anchorT = PBMission.bossPhases[boss.phase].anchorTime;
+        var anchors = PBMission.anchors;
+        var pick = anchors[Math.floor(gameplayRandom() * anchors.length)];
         boss.anchor.set(pick[0], 2.5, pick[1]);
         spawnParticles(boss.pos, C.violet, 8, 4, 0.35, 0.05);
       }
@@ -9208,6 +9701,7 @@
       var dz = player.pos.z - boss.pos.z;
       boss.group.quaternion.setFromAxisAngle(UP, Math.atan2(dx, dz));
       boss.group.position.copy(boss.pos);
+      boss.group.scale.setScalar(.72 + .28 * Math.min(1, boss.t / .93));
 
       if (boss.flash > 0) boss.coreMat.emissive.setHex(0xffffff);
       else boss.coreMat.emissive.setHex(boss.enraged ? 0xff1a0a : 0xff3a9a);
@@ -9229,19 +9723,38 @@
       var auraPulse = 0.5 + 0.5 * Math.sin(boss.t * (boss.phase === 3 ? 7 : 3.4));
       boss.aura.scale.setScalar(1.52 + auraPulse * 0.18 + (boss.exposed > 0 ? 0.2 : 0));
       boss.auraCore.scale.setScalar(0.98 + auraPulse * 0.14);
-      boss.auraMat.opacity = 0.04 + auraPulse * 0.03;
-      boss.auraCoreMat.opacity = 0.08 + auraPulse * 0.05;
+      boss.auraMat.opacity = 0.022 + auraPulse * 0.018;
+      boss.auraCoreMat.opacity = 0.047 + auraPulse * 0.025;
       boss.floorGlow.position.y = 0.07 - boss.pos.y;
       boss.floorCore.position.y = 0.075 - boss.pos.y;
       var floorPulse = 0.82 + 0.18 * Math.sin(boss.t * 2.6);
       boss.floorGlowMat.opacity = (boss.exposed > 0 ? 0.11 : 0.065) * floorPulse;
       boss.floorCoreMat.opacity = (boss.exposed > 0 ? 0.15 : 0.095) * floorPulse;
 
-      boss.ring.rotation.z += dt * 1.5;
+      boss.ring.rotation.z += dt * (boss.enraged ? 2.3 : 1.08);
       boss.ring2.rotation.z -= dt * 2.1;
 
-      var targetOpen = boss.exposed > 0 ? 1 : 0;
+      // V7 phase structure: the armour shell itself changes with the phase.
+      // Phase 1 is sealed, phase 2 cracks open to reveal the ring and heat
+      // sinks, and phase 3 vents with a wider, hotter gap.  Core exposure adds
+      // the final full opening, so this is geometry motion, not a colour swap.
+      var phaseOpen = boss.phase === 3 ? 0.44 : (boss.phase === 2 ? 0.18 : 0);
+      var targetOpen = boss.exposed > 0 ? 1 : phaseOpen;
       boss.plateOpen = lerp(boss.plateOpen, targetOpen, 1 - Math.exp(-dt * 9));
+      if (boss.plateMat) {
+        var heat = (boss.enraged ? 0.42 : (boss.phase === 2 ? 0.14 : 0.025)) +
+          (1 - boss.hp / boss.maxHp) * 0.22 + (boss.shield > 0 ? 0.05 : 0);
+        boss.plateMat.emissive.setRGB(heat * 0.62, heat * 0.14, heat * 0.17);
+        boss.plateMat.wear = 1 - boss.hp / boss.maxHp;
+        if (boss.bossVentMat) {
+          boss.bossVentMat.color.setHex(boss.enraged ? 0xd24e28 : (boss.phase === 2 ? 0x6e8193 : 0x302e35));
+          boss.bossVentMat.radiance = 0.65 + heat * (1.6 + Math.sin(boss.t * 11) * 0.3);
+        }
+        for (var vent of boss.ventPlumes) {
+          vent.visible = boss.enraged || boss.exposed > 0;
+          vent.material.opacity = (boss.enraged ? 0.22 : 0.09) * (0.67 + 0.33 * Math.sin(boss.t * 8 + vent.rotation.y));
+        }
+      }
       for (var p = 0; p < boss.plates.length; p++) {
         var plate = boss.plates[p];
         var radius = 1.15 + boss.plateOpen * 0.95;
@@ -9252,6 +9765,15 @@
         );
         plate.mesh.rotation.y = -plate.angle + Math.PI / 2;
         plate.mesh.rotation.z = boss.plateOpen * 0.4;
+        plate.sink.rotation.x = -boss.plateOpen * 1.08;
+        plate.piston.scale.y = .42 + boss.plateOpen * .48;
+        var fracture = boss.enraged ? Math.min(1, 0.06 + (150 - boss.hp) / 155) : 0;
+        plate.fracture.position.x = fracture * .22;
+        plate.fracture.position.y = -fracture * .14;
+        plate.fracture.rotation.z = fracture * .37;
+        var charging = boss.action && (boss.action.type === 'laser' || boss.action.type === 'missiles');
+        plate.emitter.visible = boss.phase > 1 && (boss.exposed > 0 || !!charging);
+        plate.emitter.scale.y = .11 + (charging ? Math.min(.105, boss.action.t * .13) : .04);
       }
 
       boss.shieldGroup.visible = boss.shield > 0;
@@ -9262,7 +9784,7 @@
       }
 
       if (boss.contactCd <= 0 && dist2D(boss.pos, player.pos) < 1.9) {
-        damagePlayer(8);
+        damagePlayer(8, boss.pos);
         boss.contactCd = 0.7;
       }
 
@@ -9304,13 +9826,13 @@
         var parts = {};
         parts.warnFloor = new THREE.Mesh(G.box, mats.warnFloor);
         parts.warnFloor.position.y = -1.389;
-        parts.warnOuter = new THREE.Mesh(G.box, mats.warnOuter);
-        parts.warnCore = new THREE.Mesh(G.box, mats.warnCore);
-        parts.chargeOuter = new THREE.Mesh(G.box, mats.chargeOuter);
-        parts.chargeCore = new THREE.Mesh(G.box, mats.chargeCore);
-        parts.beamHalo = new THREE.Mesh(G.box, mats.beamHalo);
-        parts.beamMid = new THREE.Mesh(G.box, mats.beamMid);
-        parts.beamCore = new THREE.Mesh(G.box, mats.beamCore);
+        parts.warnOuter = new THREE.Mesh(MODELS.beam, mats.warnOuter);
+        parts.warnCore = new THREE.Mesh(MODELS.beam, mats.warnCore);
+        parts.chargeOuter = new THREE.Mesh(MODELS.beam, mats.chargeOuter);
+        parts.chargeCore = new THREE.Mesh(MODELS.beam, mats.chargeCore);
+        parts.beamHalo = new THREE.Mesh(MODELS.beam, mats.beamHalo);
+        parts.beamMid = new THREE.Mesh(MODELS.beam, mats.beamMid);
+        parts.beamCore = new THREE.Mesh(MODELS.beam, mats.beamCore);
         parts.impactA = new THREE.Mesh(G.lowSphere, mats.impact);
         parts.impactB = new THREE.Mesh(G.lowSphere, mats.impact);
         parts.surgeA = new THREE.Mesh(G.box, mats.surge);
@@ -9424,7 +9946,7 @@
       p.warnCore.scale.set(len, 0.034, 0.07);
       p.chargeOuter.scale.set(len * 0.1, 0.42, 0.42);
       p.chargeCore.scale.set(len * 0.1, 0.09, 0.11);
-      p.beamHalo.scale.set(len, 0.7, 0.7);
+      p.beamHalo.scale.set(len, 0.48, 0.50);
       p.beamMid.scale.set(len, 0.26, 0.26);
       p.beamCore.scale.set(len, 0.07, 0.07);
       p.impactA.position.set(-len * 0.5, 0, 0);
@@ -9438,7 +9960,6 @@
       applyLaserColors(slot);
       setLaserWarnVisible(slot, true);
       lasers.push(slot);
-      addToast('激光预警 // 离开红线', 'danger');
     }
 
     function updateLasers(dt) {
@@ -9474,7 +9995,7 @@
             );
             spawnSparks(fxTmpVec, laserPaletteHex(l.phase), 8, 5.5, 1.4);
           }
-          var stroke = 0.5 + 0.5 * Math.sin(l.t * 40);
+          var stroke = settings.reducedMotion ? 0.5 : 0.5 + 0.5 * Math.sin(l.t * 40);
           l.mats.beamHalo.opacity = 0.14 + stroke * 0.12;
           l.mats.beamMid.opacity = 0.55 + stroke * 0.22;
           l.mats.beamCore.opacity = 0.9 + stroke * 0.08;
@@ -9510,7 +10031,7 @@
             l.tick -= dt;
             if (l.tick <= 0) {
               l.tick = 0.3;
-              damagePlayer(9);
+              damagePlayer(9, boss ? boss.pos : null);
             }
           } else {
             l.tick = 0;
@@ -9640,7 +10161,7 @@
               }
             }
             if (!safe) {
-              damagePlayer(18);
+              damagePlayer(18, w.group.position);
               spawnSparks(player.pos, C.magenta, 8, 5.5, 1.5);
             }
             w.hit = true;
@@ -9662,7 +10183,6 @@
     /* ----------------------------------------------------------------- flow */
 
     var bannerTimer = 0;
-    var toastCount = 0;
 
     function addToast(text, tone) {
       if (!ui.toasts) return;
@@ -9670,14 +10190,12 @@
       el.className = 'toast' + (tone ? ' is-' + tone : '');
       el.textContent = text;
       ui.toasts.appendChild(el);
-      toastCount++;
       while (ui.toasts.children.length > 4) {
         ui.toasts.removeChild(ui.toasts.firstChild);
       }
       setTimeout(function () {
         if (el.parentNode) el.parentNode.removeChild(el);
       }, 2400);
-      void toastCount;
     }
 
     function showBanner(text, ms) {
@@ -9691,28 +10209,48 @@
       }, ms || 1700);
     }
 
-    function zoneLabelAt(z) {
-      if (z > ZONE.entrance.minZ) return ZONE.entrance.label;
-      if (z > ZONE.containers.minZ) return ZONE.containers.label;
-      if (z > ZONE.loading.minZ) return ZONE.loading.label;
-      if (z > ZONE.boss.minZ) return ZONE.boss.label;
-      return ZONE.extraction.label;
-    }
-
     function updateZoneTag() {
-      if (!ui.sectorTag) return;
-      setText(ui.sectorTag, 'SUNSET DOCKYARD // ' + zoneLabelAt(player.pos.z));
+      var zone = PBMission.zoneAt(player.pos.z);
+      setText(ui.sectorTag, 'SECTOR 07  /  ' + zone.label);
     }
 
     function updateObjective() {
-      var text = '目标 // 穿过入口堆场';
-      if (bossDefeated) text = '目标 // 前往码头尽头，在出口按 E 撤离';
-      else if (boss && boss.alive) text = '目标 // 开放船坞 // 击败零号守门者';
-      else if (flow.wave === 1) text = '目标 // 集装箱区 // 清除第一波封锁';
-      else if (flow.wave === 2) text = '目标 // 装卸平台 // 摧毁第二波封锁';
-      else if (flow.bossActive) text = '目标 // 进入开放 Boss 船坞';
-      setText(ui.objective, text);
       updateZoneTag();
+    }
+
+    function bindMissionEvents() {
+      events.on('mission.objectiveChange', function (detail) {
+        setText(ui.objective, detail.objective);
+        ui.objective.classList.remove('objective-change');
+        if (!settings.reducedMotion) {
+          void ui.objective.offsetWidth;
+          ui.objective.classList.add('objective-change');
+        }
+        if (detail.caption && settings.subtitles) {
+          caption.textContent = '船坞调度  /  ' + detail.caption;
+          captionT = 4.4;
+          caption.hidden = false;
+        }
+        if (detail.node === 'transit' || detail.node === 'approach') {
+          showBanner('区域清除', 1400);
+        }
+      });
+      events.on('enemy.alert', function () { encounterAlertT = 3.2; });
+      events.on('boss.attack', function (detail) {
+        setText(bossWarning, PBMission.attackNames[detail.attack]);
+        warningT = detail.attack === 'laser' ? 2.1 : 1.7;
+      });
+      events.on('boss.phaseChange', function (detail) {
+        setArenaPhase(detail.phase);
+        flow.setNode('boss' + detail.phase);
+        warningT = 0;
+      });
+      events.on('exit.unlock', function () {
+        updateExitVisuals();
+        setArenaPhase(4);
+        flow.setNode('extract');
+        warningT = 0;
+      });
     }
 
     function queueSpawn(delay, fn) {
@@ -9734,60 +10272,37 @@
       flow.wave = n;
       flow.clearT = -1;
       flow.bossActive = false;
-
-      if (n === 1) {
-        setText(ui.waveLabel, 'WAVE 01');
-        showBanner('WAVE 01 // 集装箱区失守', 1900);
-        addToast('第一波 // 4 个漂移哨兵进入堆场', 'danger');
-        queueSpawn(0.5, function () { spawnSentinel(-10, 6); });
-        queueSpawn(0.8, function () { spawnSentinel(10, 6); });
-        queueSpawn(1.1, function () { spawnSentinel(-10, -2); });
-        queueSpawn(1.4, function () { spawnSentinel(10, -2); });
-      } else if (n === 2) {
-        setText(ui.waveLabel, 'WAVE 02');
-        showBanner('WAVE 02 // 装卸平台交火', 1900);
-        addToast('第二波 // 4 哨兵 + 2 固定炮台', 'danger');
-        queueSpawn(0.4, function () { spawnSentinel(-12, -12); });
-        queueSpawn(0.65, function () { spawnSentinel(-4, -18); });
-        queueSpawn(0.9, function () { spawnSentinel(3, -12); });
-        queueSpawn(1.15, function () { spawnSentinel(2, -20); });
-        queueSpawn(1.5, function () { spawnTurret(-19.5, -18.5, 1.95); });
-        queueSpawn(1.8, function () { spawnTurret(19.5, -8.5, 1.95); });
+      flow.setNode('wave' + n);
+      encounterAlertT = 2.2;
+      showBanner(n === 1 ? '第一波 · 集装箱区封锁' : '第二波 · 装卸平台封锁', 1900);
+      for (var spawn of PBMission.waves[n]) {
+        queueWaveSpawn(spawn);
       }
+      PBSettings.record(n, runTime, kills, false);
       updateObjective();
       updateHud();
+    }
+
+    function queueWaveSpawn(spawn) {
+      var kind = spawn.y === undefined ? spawnSentinel : spawnTurret;
+      queueSpawn(spawn.delay, function () { kind(spawn.x, spawn.z, spawn.y); });
     }
 
     function beginBoss() {
       flow.wave = 3;
       flow.clearT = -1;
       flow.bossActive = true;
+      flow.setNode('arrival');
       setText(ui.waveLabel, 'BOSS');
-      showBanner('GATEKEEPER ZERO // 零号守门者', 2400);
-      addToast('高能信号逼近 // 守门者苏醒', 'boss');
-      updateObjective();
+      showBanner('GATEKEEPER ZERO  /  零号守门者', 2100);
+      events.emit('boss.arrival', { point: bossPool.pos });
       queueSpawn(2.0, spawnBoss);
+      PBSettings.record(3, runTime, kills, false);
     }
 
     function updateFlow(dt) {
-      if (mode !== 'playing') return;
-      if (bossDefeated) return;
-      if (flow.bossActive) return;
-      if (flow.wave < 1) return;
-
-      if (enemies.length === 0 && pending.length === 0) {
-        if (flow.clearT < 0) {
-          flow.clearT = 2.1;
-          addToast('区域清除 // 下一波接近', 'good');
-          showBanner('SECTOR CLEAR', 1400);
-        } else {
-          flow.clearT -= dt;
-          if (flow.clearT <= 0) {
-            if (flow.wave === 1) beginWave(2);
-            else if (flow.wave === 2) beginBoss();
-          }
-        }
-      }
+      if (mode !== 'playing' || bossDefeated) return;
+      flow.update(dt, player.pos.z, enemies.length + pending.length, beginWave, beginBoss);
     }
 
     /* ---------------------------------------------------------------- run */
@@ -9822,6 +10337,10 @@
       for (i = 0; i < missileFxPool.length; i++) {
         missileFxPool[i].owner = null;
         missileFxPool[i].group.visible = false;
+      }
+      for (var flash of impactFlashes) {
+        flash.life = 0;
+        flash.mesh.visible = false;
       }
       for (i = 0; i < particles.length; i++) {
         particles[i].alive = false;
@@ -9887,6 +10406,7 @@
       }
       releaseAllContactShadows();
       boss = null;
+      bossWreck = null;
     }
 
     function resetRunState() {
@@ -9895,6 +10415,7 @@
       player.pos.set(0, EYE, 12.6);
       player.yaw = 0;
       player.pitch = 0;
+      viewSwayYaw = viewSwayPitch = lastViewYaw = lastViewPitch = 0;
       player.hp = player.maxHp;
       player.invuln = 0;
       player.dashT = 0;
@@ -9927,13 +10448,27 @@
       kills = 0;
       bossEverSpawned = false;
       bossDefeated = false;
-      muzzleT = 0;
+      muzzleT = muzzleSmokeT = 0;
+      if (scorch) scorch.visible = false;
+      updateMuzzleSmoke(0);
       lastDryToast = -10;
       if (muzzleFlash) muzzleFlash.visible = false;
 
-      flow.wave = 0;
-      flow.clearT = -1;
-      flow.bossActive = false;
+      flow.reset();
+      cinematics.skip();
+      caption.hidden = true;
+      damageDirection.hidden = true;
+      bossWarning.hidden = true;
+      encounterAlertT = captionT = warningT = 0;
+      inspection = sprintPose = landingKick = lookStress = aimIdle = stepDistance = 0;
+      cameraFov = settings.fov;
+      worldObjects.reset();
+      impactMarks.reset();
+      renderer.clearWaterRipples();
+      if (seed !== null) {
+        gameplayRandom = PBEvents.rng(seed);
+        visualRandom = PBEvents.rng(seed ^ 0xa53d19);
+      }
 
       exit.unlocked = false;
       updateExitVisuals();
@@ -9943,8 +10478,11 @@
       ui.bossBar.classList.remove('is-shielded', 'is-exposed', 'is-enraged');
       ui.hint.hidden = true;
       ui.supplyPanel.hidden = true;
+      if (bannerTimer) clearTimeout(bannerTimer);
+      bannerTimer = 0;
       ui.banner.hidden = true;
-      if (ui.toasts) ui.toasts.innerHTML = '';
+      if (ui.toasts) ui.toasts.replaceChildren();
+      reportedAudioError = '';
       ui.damage.style.opacity = '0';
       ui.screenFlash.classList.remove('on', 'is-hard');
       screenFlashToken++;
@@ -9960,13 +10498,16 @@
       resetRunState();
 
       mode = 'playing';
+      viewRoot.visible = true;
+      sound.unlock();
+      sound.setMode(mode);
       overlay.hidden = true;
+      canvas.focus({ preventScroll: true });
       hud.classList.remove('is-hidden');
       lastTs = performance.now();
 
       updateObjective();
       updateHud();
-      beginWave(1);
       requestLock();
       addToast('突入开始 // 保持移动', 'good');
     }
@@ -9974,6 +10515,7 @@
     function pauseGame() {
       if (mode !== 'playing') return;
       mode = 'paused';
+      sound.setMode(mode);
       clearInput();
       cancelSupply();
       weapons[currentWeapon].reloading = 0;
@@ -9982,20 +10524,29 @@
       if (ui.supplyPanel) ui.supplyPanel.hidden = true;
       releaseLock();
       showOverlay('paused');
+      ui.ovBtn.focus({ preventScroll: true });
     }
 
     function resumeGame() {
+      if (renderingLost) return;
       if (mode !== 'paused') return;
       mode = 'playing';
+      viewRoot.visible = true;
+      sound.unlock();
+      sound.setMode(mode);
       overlay.hidden = true;
       clearInput();
       lastTs = performance.now();
+      canvas.focus({ preventScroll: true });
       requestLock();
     }
 
     function failRun() {
-      if (mode === 'won' || mode === 'lost') return;
+      if (mode !== 'playing') return;
       mode = 'lost';
+      sound.setMode(mode);
+      events.emit('run.lost', { point: player.pos });
+      PBSettings.record(Math.max(0, flow.wave), runTime, kills, false);
       clearInput();
       cancelSupply();
       weapons[currentWeapon].reloading = 0;
@@ -10004,11 +10555,16 @@
       releaseLock();
       hud.classList.add('is-hidden');
       showOverlay('lost');
+      ui.ovBtn.focus({ preventScroll: true });
     }
 
     function winRun() {
       if (mode !== 'playing') return;
       mode = 'won';
+      sound.setMode(mode);
+      events.emit('run.won', { point: exit.pos });
+      flow.setNode('complete');
+      PBSettings.record(4, runTime, kills, true);
       clearInput();
       releaseLock();
       hud.classList.add('is-hidden');
@@ -10016,6 +10572,7 @@
       flashScreen(0x6bffb0, true);
       addToast('断层突破 // 出口接入完成', 'good');
       showOverlay('won');
+      ui.ovBtn.focus({ preventScroll: true });
     }
 
     function fmtTime(sec) {
@@ -10027,9 +10584,9 @@
 
     function progressText() {
       if (bossDefeated) return '出口';
-      if (flow.bossActive) return 'BOSS';
-      if (flow.wave === 2) return 'WAVE 02';
-      return 'WAVE 01';
+      if (flow.bossActive) return '守门者';
+      if (flow.wave > 0) return 'WAVE 0' + flow.wave;
+      return '安检区';
     }
 
     function statCell(label, value, cls) {
@@ -10039,6 +10596,9 @@
 
     function showOverlay(kind) {
       overlay.hidden = false;
+      overlay.classList.toggle('is-menu', kind === 'menu');
+      viewRoot.visible = kind === 'paused';
+      byId('menuView').hidden = kind !== 'menu';
       panel.style.animation = 'none';
       void panel.offsetWidth;
       panel.style.animation = '';
@@ -10047,6 +10607,8 @@
         statCell('击杀 / KILLS', String(kills).padStart(2, '0')) +
         statCell('进度 / PROGRESS', progressText(), bossDefeated ? 'is-good' : 'is-accent');
 
+      var records = PBSettings.records();
+      byId('audioPreview').hidden = kind !== 'menu' || sound.snapshot().status === 'running';
       ui.ovControls.hidden = kind !== 'menu';
       ui.ovStats.hidden = kind === 'menu';
       ui.ovStats.innerHTML = stats;
@@ -10056,27 +10618,29 @@
         ui.ovKicker.textContent = 'BREACH PROTOCOL // 断层级指令';
         ui.ovTitle.innerHTML = 'PIXEL<span>//</span>BREACH';
         ui.ovSub.textContent = '断 层 突 围';
-        ui.ovDesc.textContent = '落日船坞已失守。穿过入口堆场、集装箱区与装卸平台，拆掉零号守门者的 500 点核心，再从开放船坞尽头的出口撤离。WASD 移动，SPACE 跳跃，E 补给/撤离。';
+        ui.ovDesc.textContent = '落日船坞已失守。穿过集装箱区和装卸平台，击败零号守门者，从七号泊位撤离。';
         ui.ovBtn.innerHTML = '开始突入 <kbd>ENTER</kbd>';
-        ui.ovFoot.textContent = '点击开始 · 浏览器会锁定鼠标指针';
+        ui.ovFoot.textContent = records.clears
+          ? '最快撤离 ' + fmtTime(records.bestTime) + ' · 最高击杀 ' + records.bestKills
+          : '点击开始 · 浏览器会锁定鼠标指针';
       } else if (kind === 'paused') {
         ui.ovKicker.textContent = 'LINK FROZEN // 链路冻结';
-        ui.ovTitle.textContent = 'PAUSED';
+        ui.ovTitle.textContent = '任务暂停';
         ui.ovSub.textContent = '链 路 冻 结';
         ui.ovDesc.textContent = '鼠标已释放，模拟暂停。按 Enter 或点击按钮继续突入。';
         ui.ovBtn.innerHTML = '继续突入 <kbd>ENTER</kbd>';
-        ui.ovFoot.textContent = 'ESC 暂停并释放指针锁定';
+        ui.ovFoot.textContent = 'Esc 释放指针 · 重载画质会重置当前任务';
       } else if (kind === 'won') {
         ui.ovKicker.textContent = 'BREACH COMPLETE // 断层已突破';
-        ui.ovTitle.textContent = 'ESCAPED';
+        ui.ovTitle.textContent = '撤离成功';
         ui.ovSub.textContent = '断 层 已 突 破';
         ui.ovDesc.textContent = '零号守门者已解体，出口链路恢复。你的信号离开了落日船坞。';
         ui.ovBtn.innerHTML = '再次突入 <kbd>ENTER</kbd>';
         ui.ovBtn.classList.add('is-ready');
-        ui.ovFoot.textContent = '数据回收完成 // 无异常残留';
+        ui.ovFoot.textContent = '最快撤离 ' + fmtTime(records.bestTime) + ' · 最高击杀 ' + records.bestKills;
       } else {
         ui.ovKicker.textContent = 'SIGNAL LOST // 作战失败';
-        ui.ovTitle.textContent = 'FLATLINE';
+        ui.ovTitle.textContent = '信号中断';
         ui.ovSub.textContent = '信 号 中 断';
         ui.ovDesc.textContent = '生命体征归零，船坞重新封锁。检查武器、跳跃与技能冷却，再试一次。';
         ui.ovBtn.innerHTML = '重新连接 <kbd>ENTER</kbd>';
@@ -10092,10 +10656,20 @@
       updateZoneTag();
 
       var count = flow.bossActive ? enemies.length : enemies.length + pending.length;
+      var alerted = 0;
+      var charging = 0;
+      for (var unit of enemies) {
+        if (unit.ai.alert) alerted++;
+        if (unit.ai.charge > 0) charging++;
+      }
+      alertState.hidden = !count || bossDefeated;
+      setText(alertState, charging ? '△ 敌方武器充能' :
+        alerted || encounterAlertT > 0 ? '警戒中 · ' + alerted + ' 个目标' : '巡逻中');
+      bossWarning.hidden = !flow.bossActive || warningT <= 0;
       setText(ui.enemyCount, '敌人 ' + String(count).padStart(2, '0'));
 
       if (flow.bossActive || bossEverSpawned) {
-        setText(ui.waveLabel, 'BOSS // 00');
+        setText(ui.waveLabel, bossDefeated ? '撤离' : '守门者');
       } else if (flow.wave > 0) {
         setText(ui.waveLabel, 'WAVE 0' + flow.wave);
       } else {
@@ -10121,9 +10695,9 @@
 
       if (ui.moveState) {
         var airText;
-        if (player.grounded) airText = 'GROUND // SPACE 跳跃';
-        else if (player.airDashUsed) airText = 'AIRBORNE // 空中突进已用';
-        else airText = 'AIRBORNE // Q 空中突进可用';
+        if (player.grounded) airText = '地面  /  ' + keyName('jump') + ' 跳跃';
+        else if (player.airDashUsed) airText = '空中  /  突进已用';
+        else airText = '空中  /  ' + keyName('dash') + ' 突进可用';
         setText(ui.moveState, airText);
         ui.moveState.classList.toggle('is-air', !player.grounded);
         ui.moveState.classList.toggle('is-spent', !player.grounded && player.airDashUsed);
@@ -10143,7 +10717,15 @@
         setText(ui.ammoReserve, String(w.reserve));
         ui.ammoMag.classList.toggle('is-low', w.mag <= Math.ceil(d.magSize * 0.25));
       }
-      ui.reloadTag.hidden = w.reloading <= 0;
+      var lowAmmo = !d.melee && w.mag <= Math.ceil(d.magSize * 0.25);
+      ui.reloadTag.hidden = w.reloading <= 0 && !lowAmmo;
+      if (lowAmmo && w.reloading <= 0) setText(ui.reloadTag, w.mag || w.reserve ? '弹药不足' : '弹药耗尽');
+      var spread = Math.round(24 + (d.id === 'scatter' ? 13 : 0) + player.recoil * 12 +
+        (held('sprint') || player.dashT > 0 ? 8 : 0));
+      if (ui.crosshair.__spread !== spread) {
+        ui.crosshair.__spread = spread;
+        ui.crosshair.style.setProperty('--crosshair-size', spread + 'px');
+      }
       if (w.reloading > 0) {
         setText(ui.reloadTag, 'RELOADING ' +
           Math.round((1 - w.reloading / d.reloadTime) * 100) + '%');
@@ -10161,12 +10743,11 @@
         setText(ui.bossHpText, Math.ceil(bhp) + ' / 500');
         if (boss) {
           setText(ui.bossPhase, 'PHASE ' + boss.phase);
-          var state = 'CORE ONLINE';
-          if (boss.enraged) state = 'ENRAGED // 核心过载';
-          else if (boss.invuln > 0) state = 'REBOOTING';
-          else if (boss.shield > 0) state = 'SHIELD ACTIVE';
-          else if (boss.exposed > 0) state = 'CORE EXPOSED';
-          setText(ui.bossState, state);
+          var state = '核心在线';
+          if (boss.invuln > 0) state = '装甲重构';
+          else if (boss.shield > 0) state = '护盾开启';
+          else if (boss.exposed > 0) state = '核心暴露 · 伤害 ×2';
+          setText(ui.bossState, (boss.enraged ? '狂暴  /  ' : '') + state);
           ui.bossBar.classList.toggle('is-shielded', boss.shield > 0);
           ui.bossBar.classList.toggle('is-exposed', boss.exposed > 0);
           ui.bossBar.classList.toggle('is-enraged', !!boss.enraged);
@@ -10177,18 +10758,14 @@
         }
       }
 
-      var nearExit = dist2D(player.pos, exit.pos) < 4.3;
-      var canShowHint = mode === 'playing' && nearExit;
-      ui.hint.hidden = !canShowHint;
-      if (canShowHint) {
-        var msg = exit.unlocked
-          ? '<kbd>E</kbd> 接入出口'
-          : '<kbd>E</kbd> 出口锁定 // 击败守门者';
-        if (ui.hint.__msg !== msg) {
-          ui.hint.__msg = msg;
-          ui.hint.innerHTML = msg;
-        }
+      var hint = '';
+      if (mode === 'playing') {
+        if (dist2D(player.pos, exit.pos) < 4.3) {
+          hint = exit.unlocked ? '接入出口' : '出口锁定 · 击败守门者';
+        } else hint = worldObjects.hint();
       }
+      ui.hint.hidden = !hint;
+      if (hint) setText(ui.hint, keyName('interact') + '  ·  ' + hint);
     }
 
     /* ---------------------------------------------------------------- input */
@@ -10197,7 +10774,6 @@
       input.keys = Object.create(null);
       input.fireHeld = false;
       input.fireQueued = false;
-      input.sprint = false;
     }
 
     function requestLock() {
@@ -10205,18 +10781,15 @@
       if (pointerLocked) return;
       if (lockPending) return;
       if (!canvas.requestPointerLock) {
-        fallbackLook = true;
+        useFreeLook();
         return;
       }
       lockPending = true;
       try {
         var request = canvas.requestPointerLock();
-        if (request && typeof request.catch === 'function') {
-          request.catch(function () { lockPending = false; fallbackLook = true; });
-        }
+        if (request && typeof request.catch === 'function') request.catch(useFreeLook);
       } catch (err) {
-        lockPending = false;
-        fallbackLook = true;
+        useFreeLook();
       }
       setTimeout(function () {
         lockPending = false;
@@ -10236,7 +10809,7 @@
 
     function interactExit() {
       if (mode !== 'playing') return;
-      if (dist2D(player.pos, exit.pos) > 4.3) return;
+      if (dist2D(player.pos, exit.pos) >= 4.3) return;
       if (!exit.unlocked) {
         addToast('出口锁定 // 击败零号守门者', 'warn');
         return;
@@ -10245,8 +10818,10 @@
     }
 
     function onKeyDown(e) {
+      if (renderingLost || settingsDialog.hasAttribute('open') || toolsMode.capture) return;
       var code = e.code;
 
+      if (code === 'KeyX') { cinematics.skip(); return; }
       if (code === 'Escape') {
         if (mode === 'playing') {
           e.preventDefault();
@@ -10256,6 +10831,7 @@
       }
 
       if (code === 'Enter') {
+        if (e.target?.tagName === 'BUTTON') return;
         e.preventDefault();
         if (mode === 'menu' || mode === 'won' || mode === 'lost') startRun();
         else if (mode === 'paused') resumeGame();
@@ -10263,53 +10839,42 @@
       }
 
       if (mode !== 'playing') return;
-      if (code === 'Tab') {
-        e.preventDefault();
-        return;
-      }
+      if (code === 'Tab') { e.preventDefault(); return; }
 
       input.keys[code] = true;
-      if (code === 'ShiftLeft' || code === 'ShiftRight') input.sprint = true;
-      if (code === 'Space') e.preventDefault();
-
+      if (code === bound('jump') || code.startsWith('Arrow')) e.preventDefault();
       if (e.repeat) return;
 
-      if (code === 'KeyR') startReload();
-      else if (code === 'KeyQ') tryDash();
-      else if (code === 'KeyF') tryPulse();
-      else if (code === 'Space') tryJump();
-      else if (code === 'KeyE') {
-        if (!tryStartSupply()) interactExit();
-      }
-      else if (code === 'Digit1' || code === 'Numpad1') switchWeapon(0);
-      else if (code === 'Digit2' || code === 'Numpad2') switchWeapon(1);
-      else if (code === 'Digit3' || code === 'Numpad3') switchWeapon(2);
-
-      if (code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD' || code === 'Space') {
-        e.preventDefault();
-      }
+      if (code === bound('reload')) startReload();
+      else if (code === bound('dash')) tryDash();
+      else if (code === bound('pulse')) tryPulse();
+      else if (code === bound('jump')) tryJump();
+      else if (code === bound('interact')) {
+        if (!tryStartSupply() && !worldObjects.interact()) interactExit();
+      } else if (code === bound('rifle') || code === 'Numpad1' && bound('rifle') === 'Digit1') switchWeapon(0);
+      else if (code === bound('scatter') || code === 'Numpad2' && bound('scatter') === 'Digit2') switchWeapon(1);
+      else if (code === bound('blade') || code === 'Numpad3' && bound('blade') === 'Digit3') switchWeapon(2);
+      else if (code === 'KeyI' && currentGun().reloading <= 0 && player.slashT <= 0 && !input.fireHeld) inspection = 1.6;
     }
 
-    function onKeyUp(e) {
-      var code = e.code;
-      if (input.keys[code]) delete input.keys[code];
-      if (code === 'ShiftLeft' || code === 'ShiftRight') input.sprint = false;
-    }
+    function onKeyUp(e) { delete input.keys[e.code]; }
 
     function onMouseMove(e) {
       if (mode !== 'playing') return;
-      if (!pointerLocked && !fallbackLook) return;
+      if (!pointerLocked && (!fallbackLook || !(e.target instanceof Node) || !stage.contains(e.target))) return;
       var mx = e.movementX || 0;
       var my = e.movementY || 0;
       if (Math.abs(mx) > 180) mx = 0;
       if (Math.abs(my) > 180) my = 0;
-      player.yaw -= mx * SENS;
-      player.pitch = clamp(player.pitch - my * SENS, -1.35, 1.35);
+      if (mx || my) aimIdle = 0.22;
+      if (Math.abs(mx) + Math.abs(my) > 42) lookStress = 0.35;
+      player.yaw -= mx * SENS * settings.sensitivity;
+      player.pitch = clamp(player.pitch - my * SENS * settings.sensitivity, -1.35, 1.35);
     }
 
     function onMouseDown(e) {
       if (e.button !== 0) return;
-      if (mode === 'playing') {
+      if (mode === 'playing' && (pointerLocked || e.target instanceof Node && stage.contains(e.target))) {
         if (!pointerLocked && !fallbackLook) requestLock();
         input.fireHeld = true;
         input.fireQueued = true;
@@ -10331,31 +10896,36 @@
       else if (mode === 'playing' && !fallbackLook) pauseGame();
     }
 
-    function onPointerLockError() {
+    function useFreeLook() {
       lockPending = false;
+      if (!fallbackLook && mode === 'playing') {
+        addToast('指针锁定失败 · 在画面中移动鼠标以转向', 'warn');
+      }
       fallbackLook = true;
-      if (mode === 'playing') addToast('指针锁定失败 // 使用自由视角', 'warn');
     }
+
+    function onPointerLockError() { useFreeLook(); }
 
     /* --------------------------------------------------------------- menu */
 
+    var currentExposure = Number.isFinite(exposureOverride) ? exposureOverride : 1.08;
     var menuT = 0;
     var menuLook = new THREE.Vector3(0, 2.0, -32);
     var worldClock = 0;
 
+    var captureView = toolsMode.capture ? PBBenchmark.views[toolsMode.capture] : null;
+    var menuViews = Object.values(PBBenchmark.views);
+    var menuViewIndex = 0;
+
     function updateMenu(dt) {
-      menuT += dt;
-      // Slow orbit over the container yard looking toward the boss dock.
-      camera.position.set(
-        Math.sin(menuT * 0.06) * 24,
-        5.6 + Math.sin(menuT * 0.23) * 0.5,
-        -8 + Math.cos(menuT * 0.06) * 19
-      );
+      var view = captureView || menuViews[menuViewIndex];
+      if (!settings.reducedMotion && !toolsMode.fixed) menuT += dt;
+      var sway = captureView ? 0 : Math.sin(menuT * 0.12) * 2.0;
+      camera.position.set(view.eye[0] + sway, view.eye[1] + sway * 0.13, view.eye[2]);
+      menuLook.set(...view.aim);
       aimCameraAt(menuLook);
-      if (Math.abs(camera.fov - 66) > 0.01) {
-        camera.fov = 66;
-        camera.updateProjectionMatrix();
-      }
+      camera.fov = view.fov;
+      camera.updateProjectionMatrix();
     }
 
     // Conservative region bounce: keep the ambient intensity stable and only
@@ -10397,6 +10967,17 @@
       var k = 1 - Math.exp(-Math.max(0, dt) * 1.8);
       ambientLight.color.lerp(ambientTint.target, k);
       ambientLight.intensity += (intensity - ambientLight.intensity) * k;
+      var basinMix = clamp((-pz - 16) / 10, 0, 1);
+      if (scene.fog) {
+        targetFog.copy(dockFog).lerp(phaseFog, basinMix);
+        scene.fog.color.lerp(targetFog, k);
+        scene.fog.near = lerp(scene.fog.near, lerp(21, arenaMood.near, basinMix), k);
+        scene.fog.far = lerp(scene.fog.far, lerp(85, arenaMood.far, basinMix), k);
+      }
+      var exposure = Number.isFinite(exposureOverride) ? exposureOverride :
+        PBMission.zoneAt(pz).exposure - (phase === 3 && pz < -22 ? 0.045 : 0);
+      currentExposure = lerp(currentExposure, exposure, k);
+      renderer.setExposure(currentExposure);
     }
 
     function updateAmbient(dt) {
@@ -10435,20 +11016,23 @@
 
     /* ----------------------------------------------------------------- loop */
 
-    function frame(ts) {
-      requestAnimationFrame(frame);
-      if (!lastTs) lastTs = ts;
-      var dt = (ts - lastTs) / 1000;
-      lastTs = ts;
-      if (!isFinite(dt) || dt < 0) dt = 0;
-      dt = Math.min(dt, 0.05);
-      worldClock += dt;
+    var renderingLost = false;
+    var frameEnabled = !toolsMode.manual;
+    var frameHandle = 0;
+    var benchmark = PBBenchmark.create(function () { return window.__PB_RENDERING__.snapshot(); });
 
+    function updateFrame(dt) {
+      if (!captureView) worldClock += dt;
       if (mode === 'playing') {
         gameTime += dt;
         runTime += dt;
+        captionT = Math.max(0, captionT - dt);
+        warningT = Math.max(0, warningT - dt);
+        encounterAlertT = Math.max(0, encounterAlertT - dt);
+        caption.hidden = !settings.subtitles || captionT <= 0;
 
         updatePending(dt);
+        worldObjects.update(dt);
         updatePlayer(dt);
         updateSupply(dt);
         updateWeapons(dt);
@@ -10464,21 +11048,80 @@
         updateParticles(dt);
         updateTracers(dt);
         updateRings(dt);
+        updateWrecks(sentinelPool, dt);
+        updateWrecks(turretPool, dt);
+        updateBossWreck(dt);
+        impactMarks.update(dt);
         updateHud();
       } else if (mode === 'menu') {
         updateMenu(dt);
+        if (!settings.reducedMotion) worldObjects.preview(worldClock);
         updateRings(dt);
         updateParticles(dt);
       } else if (mode === 'won' || mode === 'lost') {
+        cinematics.update(dt, player.yaw, player.pitch, false, camera.fov, false);
         updateRings(dt);
         updateParticles(dt);
+        updateBossWreck(dt);
       }
+      var activeZone = PBMission.zoneAt(mode === 'menu' ? camera.position.z : player.pos.z).id;
+      sectorEffects.update(activeZone);
+      sound.update(dt, mode === 'menu' ? camera.position : player.pos, player.yaw, activeZone);
+      if (sound.error && reportedAudioError !== sound.error) {
+        reportedAudioError = sound.error;
+        addToast('声音不可用 · ' + sound.error, 'warn');
+      }
+      if (mode !== 'paused') {
+        updateSparks(dt);
+        updateImpactFlashes(dt);
+        updateSlashFx(dt);
+        updateBulletTrails(dt);
+        updateAmbient(dt);
+      }
+    }
 
-      updateSparks(dt);
-      updateSlashFx(dt);
-      updateBulletTrails(dt);
-      updateAmbient(dt);
-      renderer.render(scene, camera, worldClock);
+    function renderFrame() {
+      var blur = settings.motionBlur && !settings.reducedMotion && mode === 'playing' && player.dashT > 0
+        ? Math.min(1, player.dashT / 0.16) : 0;
+      renderer.render(scene, camera, worldClock, mode === 'menu' && !captureView, blur);
+    }
+
+    function frame(ts) {
+      if (renderingLost || !frameEnabled) return;
+      frameHandle = requestAnimationFrame(frame);
+      var ms = Math.max(0, ts - lastTs);
+      lastTs = ts;
+      if (document.hidden) return;
+      dynamicResolution.update(ms, lookStress > 0 || lasers.length > 0 || missiles.length > 1);
+      renderer.renderUnderLoad = dynamicResolution.averageFrameMs > 20;
+      // Keep aim and gameplay responsive during a transient slow frame with
+      // bounded substeps. The simulation never advances in a background tab.
+      var remaining = Math.min(ms / 1000, .10);
+      do {
+        var dt = Math.min(remaining, 1 / 45);
+        updateFrame(dt);
+        remaining -= dt;
+      } while (remaining > 0.000001 && mode === 'playing');
+      renderFrame();
+      if (benchmark.active) {
+        var aliveParticles = 0;
+        for (var particle of particles) if (particle.alive) aliveParticles++;
+        benchmark.sample(ms, renderer.stats, renderer.stats.reflectionPasses, aliveParticles, impactMarks.snapshot().active);
+      }
+    }
+
+    function applySettings(next) {
+      settings = next;
+      document.body.classList.toggle('reduced-motion', settings.reducedMotion);
+      document.body.classList.toggle('accessible-colors', settings.contrast);
+      renderer.configureEffects(settings);
+      dynamicResolution.configure(next.dynamic && !toolsMode.fixed, toolsMode.scale ?? next.scale);
+      sound.configure(next.volumes);
+      cinematics.configure(next.reducedMotion);
+      if (!next.subtitles) caption.hidden = true;
+      for (var label of document.querySelectorAll('[data-binding]')) label.textContent = keyName(label.dataset.binding);
+      byId('walkKeys').textContent = ['forward', 'left', 'back', 'right'].map(keyName).join(' ');
+      byId('weaponKeys').textContent = ['rifle', 'scatter', 'blade'].map(keyName).join(' ');
     }
 
     /* --------------------------------------------------------------- wiring */
@@ -10495,6 +11138,8 @@
       if (mode === 'playing') pauseGame();
     });
     document.addEventListener('visibilitychange', function () {
+      sound.mutePage(document.hidden);
+      lastTs = performance.now();
       if (document.hidden) {
         clearInput();
         if (mode === 'playing') pauseGame();
@@ -10504,7 +11149,7 @@
       if (e.target === canvas || (stage && stage.contains(e.target))) e.preventDefault();
     });
     stage.addEventListener('click', function () {
-      if (mode === 'playing' && !pointerLocked && !fallbackLook) requestLock();
+      if (mode === 'playing' && !pointerLocked && !fallbackLook && !settingsDialog.open) requestLock();
     });
     ui.ovBtn.addEventListener('click', function (e) {
       e.stopPropagation();
@@ -10517,9 +11162,17 @@
     if (canvas) {
       canvas.addEventListener('webglcontextlost', function (e) {
         e.preventDefault();
-        fallbackLook = true;
+        renderingLost = true;
+        cancelAnimationFrame(frameHandle);
+        sectorEffects.stop();
+        if (settingsDialog.open) settingsDialog.close();
+        benchmark.stop('WebGL context lost');
+        sound.mutePage(true);
+        clearInput();
         if (mode === 'playing') pauseGame();
-        addToast('WebGL 上下文丢失 // 刷新重试', 'danger');
+        releaseLock();
+        fatal('WebGL 上下文已丢失。重新加载以恢复渲染。');
+        byId('reloadGame').focus({ preventScroll: true });
       });
     }
 
@@ -10530,7 +11183,7 @@
     window.__PB_LIGHTING__ = {
       maxLocalLights: renderer.maxLocalLights,
       activeLimit: QUALITY.maxLocalLights,
-      quality: renderer.quality,
+      get quality() { return renderer.quality; },
       shadowSlots: CONTACT_SHADOW_LIMIT,
       snapshot: function () {
         var out = [];
@@ -10554,24 +11207,25 @@
 
     // Read-only inspection of the active pipeline and allocated resources.
     window.__PB_RENDERING__ = {
-      version: 6,
-      build: 'V6',
-      backend: renderer.isWebGL2 ? 'webgl2' : 'fallback',
-      quality: renderer.quality,
+      version: 8,
+      build: 'V8',
+      backend: renderer.backend,
+      get quality() { return renderer.quality; },
       snapshot: function () {
         var active = 0;
         for (var i = 0; i < localLights.length; i++) {
           if (localLights[i].light.visible) active++;
         }
         var caps = renderer.capabilities || {};
-        var high = renderer._high;
+        var high = renderingLost ? null : renderer._high;
         var hasAtlas = !!(surfaceDetailTexture && surfaceDetailTexture._glTexture);
         var cssW = canvas ? canvas.clientWidth : 0;
+        var scaleState = dynamicResolution.snapshot();
         var cssH = canvas ? canvas.clientHeight : 0;
         return {
-          version: 6,
-          build: 'V6',
-          backend: renderer.isWebGL2 ? 'webgl2' : 'fallback',
+          version: 8,
+          build: 'V8',
+          backend: renderer.backend,
           contextType: renderer.backend,
           webgl2: renderer.isWebGL2,
           requestedQuality: QUALITY.requested,
@@ -10579,20 +11233,26 @@
           selectedProfile: QUALITY.name,
           degraded: QUALITY.degraded,
           profileReason: QUALITY.reason,
-          shaderVariant: QUALITY.shaderVariant,
-          reducedShader: QUALITY.shaderVariant === 'compat',
+          shaderVariant: renderer.profile.shaderVariant || 'full',
+          reducedShader: (renderer.profile.shaderVariant || 'full') === 'compat',
           uniformBudget: renderer.uniformBudget || 0,
           detailScale: renderer._detailScale,
           internalResolution: { width: RES_W, height: RES_H },
+          baseResolution: { width: QUALITY.baseWidth, height: QUALITY.baseHeight },
+          renderScale: dynamicResolution.scale,
+          renderScaleRange: { min: dynamicResolution.min, max: dynamicResolution.max },
+          dynamicResolution: { ...scaleState, enabled: !renderingLost && scaleState.enabled },
           backbuffer: {
             width: canvas ? canvas.width : 0,
             height: canvas ? canvas.height : 0
           },
           displayCssResolution: { width: cssW, height: cssH },
           aspect: '16:9',
-          cssScaling: QUALITY.name === 'high' ? 'smooth' : 'nearest-neighbor',
-          pixelated: QUALITY.name !== 'high',
-          antialias: false,
+          contextLost: renderingLost,
+          cssScaling: 'smooth bilinear (image-rendering: auto)',
+          pixelated: false,
+          antialias: high ? (high.msaa ? '4× world MSAA' : 'No world MSAA') +
+            (renderer.profile.fxaa ? ' + FXAA' : '') : (renderer.gl.getContextAttributes()?.antialias ? 'MSAA' : 'none'),
           maxLocalLights: renderer.maxLocalLights,
           maxRenderResolution: {
             width: renderer.maxRenderWidth || 0,
@@ -10613,36 +11273,69 @@
             renderer: caps.renderer || ''
           },
           features: {
-            proceduralAtlas: !!(TEX && TEX.containerDetail),
-            bakedPixelDetail: true,
+            proceduralAtlas: !!(surfaceLayers || hasAtlas),
+            // The atlas packs generated colour, normal, roughness and AO detail;
+            // it is a real sampled surface path, but not an imported texture set.
+            proceduralPbrDetail: !!(surfaceLayers || hasAtlas),
+            bakedPixelDetail: false,
+            pbr: !!high,
+            pbrModel: high ? 'GGX metallic-roughness + Smith-Schlick visibility + Schlick Fresnel' :
+              'Lambert diffuse + smooth Blinn-Phong highlight',
             pbrLite: !renderer.profile || renderer.profile.pbrLite !== false,
-            steppedSpecular: !high && renderer.profile.pbrLite,
+            steppedSpecular: false,
             worldSpaceDetailGrain: !high && renderer.profile.pbrLite,
-            directionalSunShadows: !!high || QUALITY.extraDetail,
+            directionalSunShadows: !!high,
             dynamicContactShadows: true,
             bakedGlowStreaks: true,
             geometryVolumetricBeams: true,
+            // Beams are layered geometry with soft additive edges, not a
+            // screen-space volumetric scattering pass.
+            volumetricBeamApproximation: true,
             textureSampling: !!surfaceLayers || hasAtlas,
-            textureSampler: surfaceLayers ? 'two 256x256 texture arrays with eight surface layers each' :
-              (hasAtlas ? 'shared 256x128 Canvas2D atlas with eight 64px tiles' : 'disabled'),
+            textureSampler: surfaceLayers ? 'two ' + surfaceLayers.size + 'px texture arrays with eight surface layers each' :
+              (hasAtlas ? 'shared ' + surfaceAtlasCanvas.width + '×' + surfaceAtlasCanvas.height + ' Canvas2D atlas' : 'disabled'),
             textureProjection: high ? 'dominant-axis world projection and object-space viewmodels' :
               (hasAtlas ? 'triplanar world projection and object-space unlit viewmodels' : 'disabled'),
-            textureFiltering: high ? 'linear and mipmapped, with distance fade' :
-              (hasAtlas ? 'nearest with distance fade' : 'disabled'),
+            textureFiltering: high ? 'linear, mipmapped' + (caps.anisotropy ? ', anisotropic ' + Math.min(8, caps.anisotropy) + '×' : '') :
+              (hasAtlas ? 'linear with distance fade' : 'disabled'),
             unlitObjectSpaceSampling: hasAtlas,
-            normalMapping: !!surfaceLayers,
-            roughnessAndAOMaps: !!surfaceLayers,
+            normalMapping: !!(high && high.surfaceReady),
+            roughnessAndAOMaps: !!(high && high.surfaceReady),
+            surfaceFallbackReason: high && !high.surfaceReady ? 'surface texture upload failed' : '',
             realShadowMap: !!high,
-            postProcessBloom: !!high,
+            postProcessBloom: !!high && renderer.profile.postProcessBloom,
+            fxaa: !!high && renderer.profile.fxaa,
+            dynamicResolution: !renderingLost && dynamicResolution.enabled && !dynamicResolution.failed,
+            roughness: !!high || (!renderingLost && renderer.profile.pbrLite),
+            wetnessMask: !!high,
+            waterRipples: !!high,
+            dashBlur: !!high && settings.post && settings.motionBlur && !settings.reducedMotion,
+            tonemapping: high ? 'ACES fitted + sRGB transfer' : 'forward highlight compression',
+            exposure: high ? high.exposure : 1,
             hdr: !!(high && high.hdr),
             proceduralSky: !!high,
-            skyReflections: !!high,
+            // The renderer has explicit planar targets for the valid passes;
+            // the remaining sky/wet-surface colour is a bounded approximation.
+            skyReflections: false,
+            skyReflectionApproximation: !!high || (!renderingLost && renderer.profile.shaderVariant === 'full'),
+            reflectionMode: high ? renderer.reflectionMode : 'approximation',
             viewmodelDepth: !!high,
-            ssao: false,
+            ssao: !!(high && high.contact && high.postEnabled),
+            menuDepthOfField: !!(high && high.menuDefocus),
             ssr: false,
+            reflectionFallbackReason: high ? high.reflections.filter(pass => !pass.target).map(pass =>
+              (pass.height < 0 ? 'sea' : pass.height > 0.55 ? 'raised deck' : 'deck') + ' target unavailable').join('; ') : '',
+            seaReflection: !!(high && high.reflections[0]?.valid),
+            deckReflection: !!(high && high.reflections[1]?.valid),
+            elevatedDeckReflection: !!(high && high.reflections[2]?.valid),
+            zonedShadows: !!(high && high.nearStatic && high.nearCombined),
+            softVolumeEdges: !!(high || renderer.profile.shaderVariant === 'full'),
             globalIllumination: false,
             rayTracing: false,
-            volumetricScattering: false
+            // No participating-media integration exists in the local renderer;
+            // contact/AO and beam geometry must not be reported as scattering.
+            volumetricScattering: false,
+            volumetricScatteringApproximation: true
           },
           resources: {
             batches: batchList.length,
@@ -10657,28 +11350,36 @@
             shadowMapSize: high ? high.shadowSize : 0,
             movingShadowCasters: high ? high.movingCasters.length : 0,
             lastShadowDraws: high ? high.shadowDraws : 0,
+            reflectionDraws: high ? high.reflectionDraws : 0,
+            drawCalls: renderer.stats.drawCalls,
+            triangles: renderer.stats.triangles,
+            renderedInstances: renderer.stats.instances,
+            visibleTriangles: renderer.stats.visibleTriangles,
+            lodDetailCulled: renderer.stats.detailCulled,
+            actorLodFar: enemies.filter(enemy => enemy.ai.far).length,
+            reflectionUpdates: high ? high.totalReflectionUpdates : 0,
+            reflectionPasses: renderer.stats.reflectionPasses,
+            postPasses: renderer.stats.postPasses,
+            gpuCache: renderer.resourceCounts(),
+            sectors: sectorEffects.snapshot(),
+            textureBytesWithMips: surfaceLayers ? Math.round(surfaceLayers.bytes * 4 / 3) : 0,
             bloomResolution: high ? { width: high.bloomWidth, height: high.bloomHeight } : null,
             sceneColorFormat: high ? (high.hdr ? 'RGBA16F' : 'RGBA8') : 'default framebuffer',
-            renderTargets: high ? high.targets.length : 0,
+            renderTargets: high ? high.targets.length + (high.msaa ? 1 : 0) : 0,
+            worldMsaaSamples: high && high.msaa ? 4 : 0,
+            ldrTarget: !!(high && high.ldr),
+            fxaaPass: !!high && renderer.profile.fxaa,
+            exposure: high ? high.exposure : 1,
+            materialClasses: Object.keys(MATERIAL_LIBRARY),
             sentinelPool: SENTINEL_POOL_SIZE,
             turretPool: TURRET_POOL_SIZE,
             bossPool: bossPool ? 1 : 0,
             contactShadowSlots: CONTACT_SHADOW_LIMIT,
             activeContactShadowLimit: Math.min(QUALITY.contactShadows, CONTACT_SHADOW_LIMIT)
           },
-          qualityProfiles: {
-            high: { width: 1920, height: 1080, localLights: 8, detailScale: 1.0, textureMix: 1.0, contactShadows: 12 },
-            balanced: { width: 960, height: 540, localLights: 5, detailScale: 0.8, textureMix: 0.85, contactShadows: 12 },
-            fallback: { width: 640, height: 360, localLights: 4, detailScale: 0.45, textureMix: 0.55, contactShadows: 6 }
-          },
-          limitations: high ? [
-            'One fixed directional shadow volume covers the playable quay.',
-            'Wet surfaces and waves reflect the procedural sky. Scene reflections and refraction are absent.',
-            'The material model uses light lobes and baked or pooled contact darkening. SSAO, global illumination and volumetric scattering are absent.'
-          ] : [
-            'Legacy lighting uses baked shadow decals and additive glow geometry.',
-            'WebGL1 forces Fallback. Its lowest uniform profile disables the surface sampler.'
-          ]
+          qualityProfiles: PBQuality.profiles,
+          assets: assets ? assets.snapshot() : { unavailable: true }
+
         };
       }
     };
@@ -10686,12 +11387,14 @@
     // Read-only development snapshot for the V3 cinematic FX layer.  It never
     // exposes a gameplay toggle and only allocates when a reviewer calls it.
     window.__PB_CINEMATIC_FX__ = {
-      version: 3,
+      version: 8,
       caps: {
         bulletVisuals: MAX.bullets,
         bulletTrails: BULLET_TRAIL_LIMIT,
         tracers: MAX.tracers,
         hitSparks: SPARK_LIMIT,
+        get impactFlashes() { return impactFlashes.length; },
+        get impactMarks() { return impactMarks.snapshot().limit; },
         rings: MAX.rings,
         telegraphs: MAX.telegraphs,
         lasers: MAX.lasers,
@@ -10731,6 +11434,9 @@
           bullets: bullets.length,
           tracers: activeTracers,
           sparks: activeSparks,
+          impactMarks: impactMarks.snapshot().active,
+          particles: particles.filter(particle => particle.alive).length,
+          bossWreck: !!bossWreck,
           bulletTrails: activeTrails,
           rings: activeRings,
           slashArcs: activeSlashes,
@@ -10756,14 +11462,112 @@
       }
     };
 
+    function missionSnapshot() {
+      return {
+        mode, node: flow.node, wave: flow.wave, zone: PBMission.zoneAt(player.pos.z).id,
+        player: { x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw: player.yaw, pitch: player.pitch,
+          hp: player.hp, grounded: player.grounded, dash: player.dashCd, pulse: player.pulseCd,
+          airDashUsed: player.airDashUsed, slash: player.slashT, inspection, fov: camera.fov },
+        input: { pointerLocked, fallbackLook },
+        weapon: currentWeapon, weapons: weapons.map(gun => ({ mag: gun.mag, reserve: gun.reserve, reload: gun.reloading })),
+        enemies: enemies.map(enemy => ({ type: enemy.type, hp: enemy.hp, x: enemy.pos.x, y: enemy.pos.y,
+          z: enemy.pos.z, state: enemy.ai.state, far: enemy.ai.far })),
+        pending: pending.length, time: runTime, kills,
+        boss: boss && { hp: boss.hp, phase: boss.phase, enraged: boss.enraged, shield: boss.shield, exposed: boss.exposed,
+          x: boss.pos.x, y: boss.pos.y, z: boss.pos.z, attack: boss.action?.type, armorOpen: boss.plateOpen },
+        exit: exit.unlocked,
+        supply: { active: supply.active, progress: supply.progress, stations: supplyStations.map(
+          station => ({ id: station.id, x: station.x, z: station.z, cooldown: station.cooldown })) },
+        world: worldObjects.snapshot(), cinematic: cinematics.snapshot(), settings: PBSettings.normalize(settings),
+        audio: sound.snapshot(), assets: assets ? assets.snapshot() : { unavailable: true }, records: PBSettings.records()
+      };
+    }
+
+    function setupTools() {
+      window.__PB_MISSION__ = { snapshot: missionSnapshot };
+      if (toolsMode.benchmark) window.__PB_BENCHMARK__ = { sample: benchmark.begin };
+      if (toolsMode.manual) {
+        window.__PB_QA__ = Object.freeze({
+          step(ticks = 1, draw = false) {
+            if (renderingLost) return missionSnapshot();
+            for (var i = 0; i < Math.max(1, Math.min(1200, ticks)); i++) updateFrame(1 / 60);
+            if (draw) renderFrame();
+            return missionSnapshot();
+          },
+          draw() { if (!renderingLost) renderFrame(); },
+          live(enabled) {
+            if (renderingLost || frameEnabled === Boolean(enabled)) return;
+            frameEnabled = Boolean(enabled);
+            cancelAnimationFrame(frameHandle);
+            if (frameEnabled) {
+              lastTs = performance.now();
+              frameHandle = requestAnimationFrame(frame);
+            }
+          },
+          place(x, z, elevation = 0) {
+            player.pos.set(x, EYE + elevation, z);
+            player.velocityY = 0;
+            player.grounded = true;
+          },
+          aim(x, y, z) {
+            var dx = x - player.pos.x, dz = z - player.pos.z;
+            player.yaw = Math.atan2(-dx, -dz);
+            player.pitch = Math.atan2(y - player.pos.y, Math.hypot(dx, dz));
+          },
+          damagePlayer,
+          damageEnemy(index, amount) {
+            if (enemies[index]) damageEnemy(enemies[index], amount, C.cyan, enemies[index].pos);
+          },
+          damageBoss(amount) { if (boss) damageBoss(amount, C.cyan, boss.pos); }
+        });
+      }
+    }
+
     buildArena();
+    buildMuzzleSmoke();
+    buildImpactFlashPool();
+    buildScorch();
+    worldObjects = PBInteractions.create({
+      THREE, scene, geometries: G, materials: IM, player, events, collider: addCollider,
+      particles: spawnParticles, blast: spawnImpactFx, notify: function (notice) { addToast(notice, 'good'); }
+    });
+    impactMarks = PBCombatVisuals.createMarks({
+      THREE, scene, plane: G.plane, makeMaterial: matBasic, ripple: renderer.addWaterRipple.bind(renderer),
+      limit: QUALITY.extraDetail ? 40 : 24
+    });
+    bindMissionEvents();
+    PBSettings.attach(settings, applySettings, function () {
+      var url = new URL(window.location.href);
+      url.searchParams.delete('quality');
+      window.location.replace(url);
+    });
+    applySettings(settings);
+    byId('menuView').addEventListener('click', function () {
+      menuViewIndex = (menuViewIndex + 1) % menuViews.length;
+      menuT = 0;
+      updateMenu(0);
+      setText(byId('menuLocation'), PBMission.zoneAt(camera.position.z).label);
+    });
+    byId('audioPreview').addEventListener('click', function () {
+      sound.unlock();
+      var status = sound.snapshot();
+      byId('audioPreview').hidden = !status.error;
+      if (status.error) setText(ui.ovFoot, '声音无法启用 · ' + status.error);
+    });
     renderer.prepare(scene);
     resetRunState();
     hud.classList.add('is-hidden');
     showOverlay('menu');
     updateMenu(0);
     updateAmbient(0);
+    sectorEffects.update(PBMission.zoneAt(camera.position.z).id);
+    byId('loadingStatus').hidden = true;
+    ui.ovBtn.disabled = false;
+    if (shouldWarn) setText(ui.ovFoot, '材质纹理上传失败。当前使用基础材质。');
+    setupTools();
+    if (toolsMode.capture) document.body.classList.add('capture-mode');
     lastTs = performance.now();
-    requestAnimationFrame(frame);
+    if (toolsMode.manual) renderFrame();
+    else frameHandle = requestAnimationFrame(frame);
   }
 })();
